@@ -1,0 +1,60 @@
+[package]
+name = "active-call"
+version = "0.3.18"
+edition = "2024"
+authors = ["jinti<shenjindi@fourz.cn>"]
+description = "A SIP/WebRTC voice agent"
+license = "MIT"
+repository = "https://github.com/restsend/active-call"
+readme = "README.md"
+keywords = ["sip", "voip", "telephony", "voice-agent", "webrtc"]
+categories = ["network-programming", "multimedia"]
+
+[dependencies]
+voice-engine = { version = "0.3.24", features = ["opus"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.143"
+anyhow = "1"
+async-trait = "0.1.88"
+async-stream = "0.3.6"
+axum = { version = "0.8.7", features = ["ws", "tokio", "multipart"] }
+tower-http = { version = "0.6.2", features = ["fs", "trace"] }
+bytes = "1"
+futures = "0.3.31"
+rustls = { version = "0.23.33", features = ["ring"] }
+dotenv = "0.15"
+clap = { version = "4.5.53", features = ["derive"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+tokio = { version = "1.47.1", features = ["full", "tracing"] }
+tokio-stream = { version = "0.1.17", features = ["net", "sync"] }
+tokio-tungstenite = { version = "0.28.0", features = [
+    "rustls-tls-native-roots",
+] }
+tokio-util = "0.7.16"
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tracing-appender = "0.2.4"
+toml = "0.9.8"
+rsip = "0.4.0"
+rsipstack = "0.2.99"
+uuid = { version = "1.19.0", features = ["v4"] }
+reqwest = { version = "0.12.26", features = [
+    "json",
+    "stream",
+    "rustls-tls",
+    "multipart",
+] }
+object_store = { version = "0.12.4", features = ["aws", "azure", "gcp"] }
+serde_with = "3.16.1"
+rand = "0.8.5"
+humantime = "2.1.0"
+lru = "0.12.3"
+md5 = { package = "md-5", version = "0.10.6" }
+sha2 = "0.10.8"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+warp = "0.4.2"
+webrtc = "0.14.0"
+tokio-test = "0.4"
+url = "2.5"

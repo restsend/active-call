@@ -1,0 +1,39 @@
+http_addr = "0.0.0.0:8080"
+# http_gzip = true
+log_level = "debug"
+#log_file = "/tmp/rustpbx.log"
+# Paths can include a trailing * to skip whole subtrees
+# http_access_skip_paths = ["/health", "/metrics*"]
+media_cache_path = "./config/mediacache"
+
+# external IP address for SIP signaling and media
+# if server is behind NAT, set your public IP here (without port)
+# external_ip = "1.2.3.4"
+
+# rtp_start_port = 20000
+# rtp_end_port = 30000
+
+# setup your STUN/TURN servers here, for webrtc web clients
+# [[ice_servers]]
+# urls = ["stun:stun.l.google.com:19302"]
+
+# [[ice_servers]]
+# urls = ["turn:restsend.com:3478"]
+# username = "user"
+# credential = "pass"
+
+sip_addr = "0.0.0.0"
+sip_port = 13050     # don't use 5060
+
+[sip_handler]
+type = "webhook"
+url = "http://localhost:8090/webhook"
+method = "POST"
+
+[recording]
+enabled = true
+auto_start = true
+
+[callrecord]
+type = "local"
+root = "./config/cdr"
