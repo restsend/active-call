@@ -1,8 +1,11 @@
+use active_call::handler::api;
 use anyhow::Result;
+use axum::routing::get;
 use clap::Parser;
 use dotenv::dotenv;
 use std::sync::Arc;
 use tokio::signal;
+use tower_http::services::ServeDir;
 use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
 use voice_engine::media::engine::StreamEngine;
@@ -60,7 +63,22 @@ async fn main() -> Result<()> {
 
     info!("AppState started");
 
+    let http_addr = config.http_addr.clone();
+    let listener = tokio::net::TcpListener::bind(&http_addr).await?;
+    info!("listening on http://{}", http_addr);
+
+    let app = active_call::handler::call_router()
+        .merge(active_call::handler::playbook_router())
+        .route("/", get(api::index))
+        .nest_service("/static", ServeDir::new("static"))
+        .with_state(app_state.clone());
+
     tokio::select! {
+        result = axum::serve(listener, app) => {
+            if let Err(e) = result {
+                warn!("axum serve error: {:?}", e);
+            }
+        }
         res = app_state.serve() => {
             if let Err(e) = res {
                 warn!("AppState server error: {}", e);

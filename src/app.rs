@@ -13,9 +13,6 @@ use crate::{
 };
 
 use anyhow::Result;
-use axum::routing::get;
-use tower_http::services::ServeDir;
-use crate::handler::api;
 use chrono::{DateTime, Utc};
 use humantime::parse_duration;
 use rsip::prelude::HeadersExt;
@@ -45,6 +42,7 @@ pub struct AppStateInner {
     pub create_invitation_handler: Option<FnCreateInvitationHandler>,
     pub invitation: Invitation,
     pub routing_state: Arc<crate::call::RoutingState>,
+    pub pending_playbooks: Arc<Mutex<HashMap<String, String>>>,
 
     pub active_calls: Arc<std::sync::Mutex<HashMap<String, ActiveCallRef>>>,
     pub total_calls: AtomicU64,
@@ -135,23 +133,9 @@ impl AppStateInner {
             }
         }
 
-        let http_addr = self.config.http_addr.clone();
-        let listener = tokio::net::TcpListener::bind(&http_addr).await?;
-        info!("listening on http://{}", http_addr);
-
-        let app = crate::handler::router(self.clone())
-            .route("/", get(api::index))
-            .nest_service("/static", ServeDir::new("static"))
-            .with_state(self.clone());
-
         tokio::select! {
             _ = token.cancelled() => {
                 info!("cancelled");
-            }
-            result = axum::serve(listener, app) => {
-                if let Err(e) = result {
-                    warn!("axum serve error: {:?}", e);
-                }
             }
             result = endpoint_inner.serve() => {
                 if let Err(e) = result {
@@ -628,6 +612,7 @@ impl AppStateBuilder {
             create_invitation_handler: self.create_invitation_handler,
             invitation: Invitation::new(dialog_layer),
             routing_state: Arc::new(crate::call::RoutingState::new()),
+            pending_playbooks: Arc::new(Mutex::new(HashMap::new())),
             active_calls: Arc::new(std::sync::Mutex::new(HashMap::new())),
             total_calls: AtomicU64::new(0),
             total_failed_calls: AtomicU64::new(0),

@@ -3,3 +3,5 @@ Cargo.lock
 /config/mediacache
 /config/cdr
 /config/recorders
+/config/playbook
+.env

@@ -5,6 +5,7 @@ use crate::{
         active_call::{ActiveCallGuard, CallParams},
     },
     handler::api,
+    playbook::{Playbook, PlaybookRunner},
 };
 use axum::{
     Router,
@@ -15,26 +16,29 @@ use axum::{
 use bytes::Bytes;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{join, select};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use voice_engine::{event::SessionEvent, media::track::TrackConfig};
 
-pub fn router(_app_state: AppState) -> Router<AppState> {
+pub fn call_router() -> Router<AppState> {
     Router::new()
         .route("/call", get(ws_handler))
         .route("/call/webrtc", get(webrtc_handler))
         .route("/call/sip", get(sip_handler))
-        .route("/health", get(health_handler))
-        .route("/api/playbooks", get(api::list_playbooks))
-        .route("/api/playbooks/{name}", get(api::get_playbook).post(api::save_playbook))
-        .route("/api/records", get(api::list_records))
 }
 
-pub async fn health_handler() -> &'static str {
-    "OK"
+pub fn playbook_router() -> Router<AppState> {
+    Router::new()
+        .route("/api/playbooks", get(api::list_playbooks))
+        .route(
+            "/api/playbooks/{name}",
+            get(api::get_playbook).post(api::save_playbook),
+        )
+        .route("/api/playbook/run", axum::routing::post(api::run_playbook))
+        .route("/api/records", get(api::list_records))
 }
 
 pub async fn ws_handler(
@@ -91,6 +95,29 @@ pub async fn call_handler(
             server_side_track,
             None, // No extra data for now
         ));
+
+        // Check for pending playbook
+        {
+            let mut pending = app_state.pending_playbooks.lock().await;
+            if let Some(name) = pending.remove(&session_id) {
+                let path = PathBuf::from("config/playbook").join(&name);
+                match Playbook::load(path).await {
+                    Ok(playbook) => match PlaybookRunner::new(playbook, active_call.clone()) {
+                        Ok(runner) => {
+                            tokio::spawn(async move {
+                                runner.run().await;
+                            });
+                            info!(session_id, "Playbook runner started for {}", name);
+                        }
+                        Err(e) => warn!(session_id, "Failed to create runner {}: {}", name, e),
+                    },
+                    Err(e) => {
+                        warn!(session_id, "Failed to load playbook {}: {}", name, e);
+                    }
+                }
+            }
+        }
+
         let recv_from_ws_loop = async {
             while let Some(Ok(message)) = ws_receiver.next().await {
                 match message {

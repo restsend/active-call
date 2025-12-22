@@ -1,7 +1,7 @@
 use active_call::app::{AppState, AppStateBuilder};
 use active_call::config::{Config, InviteHandlerConfig};
 use anyhow::Result;
-use axum::{extract::Json, http::StatusCode as HttpStatusCode, routing::post, Router};
+use axum::{Router, extract::Json, http::StatusCode as HttpStatusCode, routing::post};
 use rsipstack::dialog::invitation::InviteOption;
 use std::{
     collections::HashMap,

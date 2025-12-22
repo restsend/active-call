@@ -3,338 +3,183 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voice Agent Workbench</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.39.0/min/vs/loader.min.js"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        cyan: {
-                            50: '#ecfeff',
-                            100: '#cffafe',
-                            200: '#a5f3fc',
-                            300: '#67e8f9',
-                            400: '#22d3ee',
-                            500: '#06b6d4',
-                            600: '#0891b2',
-                            700: '#0e7490',
-                            800: '#155e75',
-                            900: '#164e63',
-                        }
-                    }
-                }
-            }
-        }
-    </script>
+    <title>Playbook Runner</title>
     <style>
-        [x-cloak] {
-            display: none !important;
+        body {
+            font-family: sans-serif;
+            padding: 20px;
         }
 
-        .scrollbar-hide::-webkit-scrollbar {
-            display: none;
+        .container {
+            display: flex;
+            gap: 20px;
         }
 
-        .scrollbar-hide {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
+        .panel {
+            flex: 1;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+
+        #logs {
+            height: 300px;
+            overflow-y: scroll;
+            background: #f0f0f0;
+            border: 1px solid #999;
+            padding: 5px;
+        }
+
+        .active {
+            font-weight: bold;
+            color: green;
         }
     </style>
 </head>
 
-<body class="bg-cyan-50 text-slate-800 h-screen flex overflow-hidden" x-data="app()" x-cloak>
-
-    <!-- Sidebar -->
-    <aside class="w-64 bg-white border-r border-cyan-100 flex flex-col shadow-sm z-10">
-        <div class="p-6 border-b border-cyan-100">
-            <h1 class="text-2xl font-bold text-cyan-700 flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24"
-                    stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-                Voice Agent
-            </h1>
-            <p class="text-xs text-cyan-500 mt-1">Design • Debug • Publish</p>
+<body>
+    <h1>Playbook Runner</h1>
+    <div class="container">
+        <div class="panel">
+            <h3>Playbooks</h3>
+            <ul id="playbook-list"></ul>
         </div>
-
-        <nav class="flex-1 p-4 space-y-2 overflow-y-auto">
-            <template x-for="item in navItems" :key="item.id">
-                <a href="#" @click.prevent="currentTab = item.id"
-                    :class="currentTab === item.id ? 'bg-cyan-100 text-cyan-800' : 'text-slate-600 hover:bg-cyan-50 hover:text-cyan-700'"
-                    class="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200 font-medium">
-                    <span x-html="item.icon"></span>
-                    <span x-text="item.label"></span>
-                </a>
-            </template>
-        </nav>
-
-        <div class="p-4 border-t border-cyan-100">
-            <div class="flex items-center gap-3 px-4 py-2">
-                <div class="w-2 h-2 rounded-full" :class="wsConnected ? 'bg-green-500' : 'bg-red-500'"></div>
-                <span class="text-sm text-slate-500" x-text="wsConnected ? 'System Online' : 'Disconnected'"></span>
-            </div>
+        <div class="panel">
+            <h3>Controls</h3>
+            <button id="run-btn" disabled>Run Selected (WebRTC)</button>
+            <button id="hangup-btn" disabled>Hangup</button>
+            <div id="status">Status: Idle</div>
         </div>
-    </aside>
+    </div>
+    <h3>Logs</h3>
+    <div id="logs"></div>
 
-    <!-- Main Content -->
-    <main class="flex-1 flex flex-col overflow-hidden bg-cyan-50/50">
+    <script>
+        let selectedPlaybook = null;
+        let ws = null;
+        let pc = null;
 
-        <!-- Header -->
-        <header class="bg-white border-b border-cyan-100 px-8 py-4 flex justify-between items-center shadow-sm">
-            <h2 class="text-xl font-semibold text-slate-700" x-text="navItems.find(i => i.id === currentTab)?.label">
-            </h2>
-            <div class="flex items-center gap-4">
-                <button @click="refreshData()"
-                    class="p-2 text-cyan-600 hover:bg-cyan-50 rounded-full transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                        stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                </button>
-            </div>
-        </header>
+        async function loadPlaybooks() {
+            try {
+                const res = await fetch('/api/playbooks');
+                const playbooks = await res.json();
+                const list = document.getElementById('playbook-list');
+                list.innerHTML = '';
+                playbooks.forEach(p => {
+                    const li = document.createElement('li');
+                    li.textContent = p.name;
+                    li.style.cursor = 'pointer';
+                    li.onclick = () => {
+                        selectedPlaybook = p.name;
+                        document.querySelectorAll('li').forEach(el => el.classList.remove('active'));
+                        li.classList.add('active');
+                        document.getElementById('run-btn').disabled = false;
+                    };
+                    list.appendChild(li);
+                });
+            } catch (e) {
+                log('Failed to load playbooks: ' + e);
+            }
+        }
 
-        <!-- Content Area -->
-        <div class="flex-1 overflow-hidden relative">
+        document.getElementById('run-btn').onclick = async () => {
+            if (!selectedPlaybook) return;
+            log('Starting playbook: ' + selectedPlaybook);
 
-            <!-- Dashboard View -->
-            <div x-show="currentTab === 'dashboard'" class="h-full overflow-y-auto p-8">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                    <div class="bg-white p-6 rounded-xl shadow-sm border border-cyan-100">
-                        <h3 class="text-sm font-medium text-slate-500 uppercase tracking-wider">Total Calls</h3>
-                        <p class="text-3xl font-bold text-cyan-600 mt-2" x-text="stats.totalCalls">0</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-xl shadow-sm border border-cyan-100">
-                        <h3 class="text-sm font-medium text-slate-500 uppercase tracking-wider">Success Rate</h3>
-                        <p class="text-3xl font-bold text-green-600 mt-2" x-text="stats.successRate + '%'">0%</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-xl shadow-sm border border-cyan-100">
-                        <h3 class="text-sm font-medium text-slate-500 uppercase tracking-wider">Avg Duration</h3>
-                        <p class="text-3xl font-bold text-blue-600 mt-2" x-text="stats.avgDuration">0s</p>
-                    </div>
-                </div>
+            try {
+                const res = await fetch('/api/playbook/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ playbook: selectedPlaybook, type: 'webrtc' })
+                });
+                const data = await res.json();
+                const sessionId = data.session_id;
+                log('Session ID: ' + sessionId);
 
-                <div class="bg-white rounded-xl shadow-sm border border-cyan-100 p-6">
-                    <h3 class="text-lg font-semibold text-slate-700 mb-4">Quick Actions</h3>
-                    <div class="flex gap-4">
-                        <button @click="currentTab = 'debugger'"
-                            class="px-6 py-3 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition-colors shadow-sm flex items-center gap-2">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                                stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                            </svg>
-                            New Debug Session
-                        </button>
-                        <button @click="currentTab = 'playbooks'"
-                            class="px-6 py-3 bg-white text-cyan-700 border border-cyan-200 rounded-lg hover:bg-cyan-50 transition-colors shadow-sm">
-                            Manage Playbooks
-                        </button>
-                    </div>
-                </div>
-            </div>
+                startCall(sessionId);
+            } catch (e) {
+                log('Error: ' + e);
+            }
+        };
 
-            <!-- Debugger View -->
-            <div x-show="currentTab === 'debugger'" class="h-full flex flex-col md:flex-row">
-                <!-- Config Panel -->
-                <div class="w-full md:w-1/3 bg-white border-r border-cyan-100 flex flex-col h-full">
-                    <div class="p-4 border-b border-cyan-100 bg-cyan-50/30">
-                        <h3 class="font-semibold text-slate-700">Configuration</h3>
-                    </div>
-                    <div class="flex-1 overflow-y-auto p-4 space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">OpenAI API Key</label>
-                            <input type="password" x-model="debugConfig.apiKey"
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 text-sm"
-                                placeholder="sk-...">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">LLM Endpoint</label>
-                            <input type="text" x-model="debugConfig.llmEndpoint"
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 text-sm"
-                                placeholder="https://api.openai.com/v1/chat/completions">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">LLM Model</label>
-                            <input type="text" x-model="debugConfig.llmModel"
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 text-sm"
-                                placeholder="gpt-3.5-turbo">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">ASR Endpoint</label>
-                            <input type="text" x-model="debugConfig.asrEndpoint"
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 text-sm"
-                                placeholder="wss://...">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">TTS Endpoint</label>
-                            <input type="text" x-model="debugConfig.ttsEndpoint"
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 text-sm"
-                                placeholder="wss://...">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">LLM System Prompt</label>
-                            <textarea x-model="debugConfig.systemPrompt"
-                                class="w-full h-32 px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 text-sm font-mono"
-                                placeholder="You are a helpful assistant..."></textarea>
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">Voice ID</label>
-                            <input type="text" x-model="debugConfig.voiceId"
-                                class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 text-sm">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-slate-600 mb-1">Temperature</label>
-                            <input type="range" x-model="debugConfig.temperature" min="0" max="1" step="0.1"
-                                class="w-full accent-cyan-600">
-                            <div class="flex justify-between text-xs text-slate-400">
-                                <span>0.0</span>
-                                <span x-text="debugConfig.temperature"></span>
-                                <span>1.0</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="p-4 border-t border-cyan-100 bg-slate-50">
-                        <div class="flex gap-2">
-                            <button @click="startDebugCall()" :disabled="callStatus === 'active'"
-                                class="flex-1 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors">
-                                <span x-show="callStatus !== 'active'">Start Call</span>
-                                <span x-show="callStatus === 'active'">Calling...</span>
-                            </button>
-                            <button @click="endDebugCall()" :disabled="callStatus !== 'active'"
-                                class="px-4 py-2 bg-red-100 text-red-600 border border-red-200 rounded-lg hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                                Hangup
-                            </button>
-                        </div>
-                        <button @click="saveAsPlaybook()"
-                            class="w-full mt-2 py-2 text-cyan-600 text-sm hover:underline">Save Configuration as
-                            Playbook</button>
-                    </div>
-                </div>
+        document.getElementById('hangup-btn').onclick = () => {
+            if (ws) ws.close();
+            if (pc) pc.close();
+            ws = null;
+            pc = null;
+            document.getElementById('status').textContent = 'Status: Disconnected';
+            document.getElementById('hangup-btn').disabled = true;
+            document.getElementById('run-btn').disabled = false;
+        };
 
-                <!-- Chat/Interaction Panel -->
-                <div class="flex-1 flex flex-col bg-slate-50 relative">
-                    <div class="flex-1 overflow-y-auto p-6 space-y-4" id="chat-container">
-                        <template x-for="msg in chatHistory" :key="msg.id">
-                            <div :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
-                                <div :class="msg.role === 'user' ? 'bg-cyan-600 text-white' : 'bg-white text-slate-700 border border-slate-200'"
-                                    class="max-w-[80%] rounded-2xl px-4 py-3 shadow-sm">
-                                    <p class="text-sm" x-text="msg.content"></p>
-                                    <p class="text-[10px] mt-1 opacity-70" x-text="msg.timestamp"></p>
-                                </div>
-                            </div>
-                        </template>
-                        <div x-show="callStatus === 'active'" class="flex justify-center py-4">
-                            <div class="flex items-center gap-2 text-cyan-600 text-sm animate-pulse">
-                                <span class="w-2 h-2 bg-cyan-600 rounded-full"></span>
-                                Listening...
-                            </div>
-                        </div>
-                    </div>
+        async function startCall(sessionId) {
+            pc = new RTCPeerConnection();
 
-                    <!-- Metrics Overlay -->
-                    <div
-                        class="absolute top-4 right-4 bg-black/80 text-white p-3 rounded-lg text-xs font-mono space-y-1 backdrop-blur-sm">
-                        <div class="flex justify-between gap-4"><span>Latency:</span> <span class="text-green-400"
-                                x-text="metrics.latency + 'ms'"></span></div>
-                        <div class="flex justify-between gap-4"><span>Tokens/s:</span> <span class="text-blue-400"
-                                x-text="metrics.tps"></span></div>
-                        <div class="flex justify-between gap-4"><span>Status:</span> <span
-                                :class="callStatus === 'active' ? 'text-green-400' : 'text-slate-400'"
-                                x-text="callStatus"></span></div>
-                    </div>
-                </div>
-            </div>
+            // Add transceiver to ensure we offer audio
+            pc.addTransceiver('audio', { direction: 'sendrecv' });
 
-            <!-- Playbooks View -->
-            <div x-show="currentTab === 'playbooks'" class="h-full flex flex-col md:flex-row">
-                <!-- List -->
-                <div class="w-64 bg-white border-r border-cyan-100 flex flex-col h-full">
-                    <div class="p-4 border-b border-cyan-100 flex justify-between items-center">
-                        <h3 class="font-semibold text-slate-700">Playbooks</h3>
-                        <button @click="createNewPlaybook()" class="text-cyan-600 hover:text-cyan-800">+</button>
-                    </div>
-                    <div class="flex-1 overflow-y-auto">
-                        <template x-for="pb in playbooks" :key="pb.name">
-                            <div @click="selectPlaybook(pb)"
-                                :class="selectedPlaybook?.name === pb.name ? 'bg-cyan-50 border-l-4 border-cyan-500' : 'hover:bg-slate-50 border-l-4 border-transparent'"
-                                class="p-3 cursor-pointer transition-colors border-b border-slate-50">
-                                <p class="font-medium text-slate-700 text-sm" x-text="pb.name"></p>
-                                <p class="text-xs text-slate-400 mt-1" x-text="pb.updated"></p>
-                            </div>
-                        </template>
-                    </div>
-                </div>
+            // Handle incoming tracks (audio from server)
+            pc.ontrack = (event) => {
+                log('Received remote track');
+                const audio = new Audio();
+                audio.srcObject = event.streams[0];
+                audio.play();
+            };
 
-                <!-- Editor -->
-                <div class="flex-1 flex flex-col bg-white">
-                    <div class="p-4 border-b border-cyan-100 flex justify-between items-center bg-slate-50">
-                        <input type="text" x-model="selectedPlaybookName"
-                            class="bg-transparent border-none focus:ring-0 font-semibold text-lg text-slate-700"
-                            placeholder="Playbook Name">
-                        <div class="flex gap-2">
-                            <button @click="runBatch(selectedPlaybookName)"
-                                class="px-4 py-2 bg-white text-cyan-600 border border-cyan-200 rounded-lg hover:bg-cyan-50 text-sm font-medium shadow-sm">
-                                Run Batch
-                            </button>
-                            <button @click="savePlaybook()"
-                                class="px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 text-sm font-medium shadow-sm">
-                                Save Changes
-                            </button>
-                        </div>
-                    </div>
-                    <div class="flex-1 relative">
-                        <div id="monaco-editor" class="absolute inset-0"></div>
-                    </div>
-                </div>
-            </div>
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
 
-            <!-- Records View -->
-            <div x-show="currentTab === 'records'" class="h-full overflow-y-auto p-8">
-                <div class="bg-white rounded-xl shadow-sm border border-cyan-100 overflow-hidden">
-                    <table class="w-full text-left text-sm">
-                        <thead class="bg-cyan-50 text-cyan-800 font-semibold">
-                            <tr>
-                                <th class="p-4">Session ID</th>
-                                <th class="p-4">Date</th>
-                                <th class="p-4">Duration</th>
-                                <th class="p-4">Status</th>
-                                <th class="p-4">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-cyan-50">
-                            <template x-for="record in records" :key="record.id">
-                                <tr class="hover:bg-slate-50 transition-colors">
-                                    <td class="p-4 font-mono text-slate-600" x-text="record.id"></td>
-                                    <td class="p-4 text-slate-600" x-text="record.date"></td>
-                                    <td class="p-4 text-slate-600" x-text="record.duration"></td>
-                                    <td class="p-4">
-                                        <span
-                                            :class="record.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'"
-                                            class="px-2 py-1 rounded-full text-xs font-medium"
-                                            x-text="record.status"></span>
-                                    </td>
-                                    <td class="p-4">
-                                        <button class="text-cyan-600 hover:text-cyan-800 font-medium">View
-                                            Details</button>
-                                    </td>
-                                </tr>
-                            </template>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const url = `${protocol}//${window.location.host}/call/webrtc?id=${sessionId}`;
+            ws = new WebSocket(url);
 
-        </div>
-    </main>
+            ws.onopen = () => {
+                log('WebSocket connected');
+                document.getElementById('status').textContent = 'Status: Connected';
+                document.getElementById('hangup-btn').disabled = false;
+                document.getElementById('run-btn').disabled = true;
 
-    <script src="app.js"></script>
+                const cmd = {
+                    command: 'invite',
+                    option: {
+                        sdp: offer.sdp
+                    }
+                };
+                ws.send(JSON.stringify(cmd));
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    log('WS Event: ' + (msg.event || msg.command || 'unknown'));
+
+                    if (msg.event === 'answer') {
+                        await pc.setRemoteDescription({
+                            type: 'answer',
+                            sdp: msg.sdp
+                        });
+                        log('Call established (Remote Description Set)');
+                    }
+                } catch (e) {
+                    log('Error parsing WS message: ' + e);
+                }
+            };
+
+            ws.onclose = () => {
+                log('WebSocket closed');
+                document.getElementById('status').textContent = 'Status: Disconnected';
+                document.getElementById('hangup-btn').disabled = true;
+                document.getElementById('run-btn').disabled = false;
+            };
+        }
+
+        function log(msg) {
+            const div = document.getElementById('logs');
+            div.innerHTML += `<div>${new Date().toLocaleTimeString()} ${msg}</div>`;
+            div.scrollTop = div.scrollHeight;
+        }
+
+        loadPlaybooks();
+    </script>
 </body>
 
 </html>

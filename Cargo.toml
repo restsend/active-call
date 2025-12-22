@@ -11,7 +11,7 @@ keywords = ["sip", "voip", "telephony", "voice-agent", "webrtc"]
 categories = ["network-programming", "multimedia"]
 
 [dependencies]
-voice-engine = { version = "0.3.24", features = ["opus"] }
+voice-engine = { version = "0.3.26", features = ["opus"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.143"
 anyhow = "1"
@@ -46,11 +46,13 @@ reqwest = { version = "0.12.26", features = [
 ] }
 object_store = { version = "0.12.4", features = ["aws", "azure", "gcp"] }
 serde_with = "3.16.1"
-rand = "0.8.5"
+rand = "0.9.2"
 humantime = "2.1.0"
-lru = "0.12.3"
+lru = "0.16.2"
 md5 = { package = "md-5", version = "0.10.6" }
-sha2 = "0.10.8"
+sha2 = "0.10.9"
+serde_yaml = "0.9.33"
+regex = "1.12.2"
 
 [dev-dependencies]
 tempfile = "3.23.0"

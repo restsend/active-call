@@ -3,4 +3,5 @@ pub mod call;
 pub mod callrecord;
 pub mod config;
 pub mod handler;
+pub mod playbook;
 pub mod useragent;

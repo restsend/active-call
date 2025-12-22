@@ -1,6 +1,7 @@
 use active_call::app::AppStateBuilder;
 use active_call::call::Command;
 use active_call::config::Config;
+use active_call::handler::call_router;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -9,27 +10,28 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_util::sync::CancellationToken;
 use voice_engine::event::EventSender;
 use voice_engine::{
     event::SessionEvent,
-    media::engine::StreamEngine,
     media::Sample,
     media::TrackId,
+    media::engine::StreamEngine,
     synthesis::{SynthesisClient, SynthesisEvent, SynthesisOption, SynthesisType},
     transcription::{TranscriptionClient, TranscriptionOption, TranscriptionType},
 };
-use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
+use webrtc::api::media_engine::MediaEngine;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::media::Sample as WebrtcSample;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 struct MockAsrClient {
     audio_tx: mpsc::UnboundedSender<Vec<Sample>>,
@@ -92,7 +94,9 @@ impl SynthesisClient for MockTts {
         SynthesisType::Other("mock".to_string())
     }
 
-    async fn start(&mut self) -> Result<BoxStream<'static, (Option<usize>, Result<SynthesisEvent>)>> {
+    async fn start(
+        &mut self,
+    ) -> Result<BoxStream<'static, (Option<usize>, Result<SynthesisEvent>)>> {
         let (_tx, rx) = mpsc::channel(10);
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
@@ -127,7 +131,11 @@ async fn test_webrtc_call_workflow() -> Result<()> {
     );
     stream_engine.register_tts(
         SynthesisType::Other("mock".to_string()),
-        |streaming, _opt| Ok(Box::new(MockTts { _streaming: streaming }) as Box<dyn SynthesisClient>),
+        |streaming, _opt| {
+            Ok(Box::new(MockTts {
+                _streaming: streaming,
+            }) as Box<dyn SynthesisClient>)
+        },
     );
     let stream_engine = Arc::new(stream_engine);
 
@@ -140,12 +148,28 @@ async fn test_webrtc_call_workflow() -> Result<()> {
     let mut config = Config::default();
     config.http_addr = format!("127.0.0.1:{}", port);
     config.sip_port = 0;
+    let http_addr = config.http_addr.clone();
 
     let app_state = AppStateBuilder::new()
         .with_config(config)
         .with_stream_engine(stream_engine)
         .build()
         .await?;
+
+    let listener = TcpListener::bind(&http_addr).await?;
+    let router = call_router().with_state(app_state.clone());
+    let http_shutdown = CancellationToken::new();
+    let http_server = {
+        let shutdown = http_shutdown.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    shutdown.cancelled().await;
+                })
+                .await
+                .ok();
+        })
+    };
 
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {
@@ -301,6 +325,9 @@ async fn test_webrtc_call_workflow() -> Result<()> {
     ws_stream
         .send(Message::Text(serde_json::to_string(&hangup_cmd)?.into()))
         .await?;
+
+    http_shutdown.cancel();
+    http_server.await.ok();
 
     Ok(())
 }

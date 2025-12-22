@@ -76,6 +76,7 @@ pub struct ActiveCallState {
     pub ssrc: u32,
     pub refer_callstate: Option<ActiveCallStateRef>,
     pub extras: Option<HashMap<String, serde_json::Value>>,
+    pub is_refer: bool,
 }
 
 pub type ActiveCallRef = Arc<ActiveCall>;
@@ -832,13 +833,35 @@ impl ActiveCall {
             ..Default::default()
         };
 
-        let invite_option = call_option.build_invite_option()?;
+        let mut invite_option = call_option.build_invite_option()?;
+        let headers = invite_option.headers.get_or_insert_with(|| Vec::new());
+
+        self.call_state
+            .read()
+            .map(|cs| {
+                cs.option.as_ref().map(|opt| {
+                    opt.callee.as_ref().map(|callee| {
+                        headers.push(rsip::Header::Other(
+                            "X-Referred-To".to_string(),
+                            callee.clone(),
+                        ));
+                    });
+                    opt.caller.as_ref().map(|caller| {
+                        headers.push(rsip::Header::Other(
+                            "X-Referred-From".to_string(),
+                            caller.clone(),
+                        ));
+                    });
+                });
+            })
+            .ok();
 
         let ssrc = rand::random::<u32>();
         let refer_call_state = Arc::new(RwLock::new(ActiveCallState {
             start_time: Utc::now(),
             ssrc,
             option: Some(call_option),
+            is_refer: true,
             ..Default::default()
         }));
 
@@ -861,27 +884,52 @@ impl ActiveCall {
         } else {
             *self.auto_hangup.lock().await = None;
         }
+        let timeout_secs = refer_option.as_ref().and_then(|o| o.timeout).unwrap_or(30);
 
         info!(
             session_id = self.session_id,
-            ssrc, auto_hangup, callee, "do_refer"
+            ssrc, auto_hangup, callee, timeout_secs, "do_refer"
         );
 
-        match self
-            .create_outgoing_sip_track(
+        let r = tokio::time::timeout(
+            Duration::from_secs(timeout_secs as u64),
+            self.create_outgoing_sip_track(
                 self.cancel_token.child_token(),
                 refer_call_state.clone(),
                 &track_id,
                 invite_option,
-            )
-            .await
-        {
+            ),
+        )
+        .await;
+
+        let result = match r {
+            Ok(res) => res,
+            Err(_) => {
+                warn!(
+                    session_id = session_id,
+                    "refer sip track creation timed out after {} seconds", timeout_secs
+                );
+                self.event_sender
+                    .send(SessionEvent::Reject {
+                        track_id,
+                        timestamp: voice_engine::media::get_timestamp(),
+                        reason: "Timeout when refer".into(),
+                        code: Some(408),
+                        refer: Some(true),
+                    })
+                    .ok();
+                return Err(anyhow::anyhow!("refer sip track creation timed out").into());
+            }
+        };
+
+        match result {
             Ok(answer) => {
                 self.event_sender
                     .send(SessionEvent::Answer {
                         timestamp: voice_engine::media::get_timestamp(),
                         track_id,
                         sdp: answer,
+                        refer: Some(true),
                     })
                     .ok();
             }
@@ -898,6 +946,7 @@ impl ActiveCall {
                                 timestamp: voice_engine::media::get_timestamp(),
                                 reason: reason.clone(),
                                 code: Some(code.code() as u32),
+                                refer: Some(true),
                             })
                             .ok();
                     }
@@ -1076,6 +1125,7 @@ impl ActiveCall {
                                 timestamp: voice_engine::media::get_timestamp(),
                                 track_id: self.session_id.clone(),
                                 sdp: answer,
+                                refer: Some(false),
                             })
                             .ok();
                         return Ok(());
@@ -1093,6 +1143,7 @@ impl ActiveCall {
                                         timestamp: voice_engine::media::get_timestamp(),
                                         reason: reason.clone(),
                                         code: Some(code.code() as u32),
+                                        refer: Some(false),
                                     })
                                     .ok();
                             }
@@ -1155,6 +1206,7 @@ impl ActiveCall {
                             timestamp: voice_engine::media::get_timestamp(),
                             track_id: self.session_id.clone(),
                             sdp: answer.clone(),
+                            refer: Some(false),
                         })
                         .ok();
                 }
@@ -1543,6 +1595,7 @@ impl ActiveCallState {
             extra,
             from: from.map(|f| f.into()),
             to: to.map(|f| f.into()),
+            refer: Some(self.is_refer),
         }
     }
 

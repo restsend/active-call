@@ -196,12 +196,19 @@ impl DialogStateReceiverGuard {
                         continue;
                     }
 
+                    let refer = states
+                        .call_state
+                        .read()
+                        .map(|cs| cs.is_refer)
+                        .unwrap_or(false);
+
                     states
                         .event_sender
                         .send(voice_engine::event::SessionEvent::Ringing {
                             track_id: states.track_id.clone(),
                             timestamp: voice_engine::media::get_timestamp(),
                             early_media: !answer.is_empty(),
+                            refer: Some(refer),
                         })?;
 
                     if answer.is_empty() {
