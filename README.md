@@ -26,6 +26,12 @@ For detailed information on REST endpoints and WebSocket protocols, please refer
 
 ## Docker Usage
 
+### Pull the Image
+
+```bash
+docker pull ghcr.io/restsend/active-call:latest
+```
+
 ### Configuration
 
 Copy the example config and customize it:
@@ -44,7 +50,7 @@ docker run -d \
   -p 20000-20100:20000-20100/udp \
   -v $(pwd)/config.toml:/app/config.toml:ro \
   -v $(pwd)/config:/app/config \
-  active-call:latest
+  ghcr.io/restsend/active-call:latest
 ```
 
 ### Environment Variables
