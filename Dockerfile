@@ -21,8 +21,7 @@ COPY static ./static
 
 # Build the release binary with cargo caching
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target/release/incremental \
-    --mount=type=cache,target=/build/target/release/build \
+    --mount=type=cache,target=/build/target \
     cargo build --release
 
 # ============================================
@@ -34,6 +33,11 @@ LABEL maintainer="shenjindi@miuda.ai"
 LABEL org.opencontainers.image.source="https://github.com/restsend/active-call"
 LABEL org.opencontainers.image.description="A SIP/WebRTC voice agent"
 
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV TZ=UTC
+
 # Install runtime dependencies
 RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -43,18 +47,12 @@ RUN --mount=type=cache,target=/var/cache/apt \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set environment variables
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV TZ=UTC
-
 # Create app user for security
 RUN groupadd -r activeuser && useradd -r -g activeuser activeuser
 
 # Create application directory structure
 WORKDIR /app
-RUN mkdir -p /app/config/mediacache /app/config/cdr /app/config/recorders /app/static \
-    && chown -R activeuser:activeuser /app
+RUN mkdir -p /app/config/mediacache /app/config/cdr /app/config/recorders /app/static
 
 # Copy built binary and static files
 COPY --from=rust-builder /build/target/release/active-call /app/active-call
