@@ -9,13 +9,14 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{Query, State, WebSocketUpgrade, ws::Message},
+    extract::{Path, Query, State, WebSocketUpgrade, ws::Message},
     response::{IntoResponse, Response},
     routing::get,
 };
 use bytes::Bytes;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
+use serde_json::json;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{join, select};
 use tokio_util::sync::CancellationToken;
@@ -29,6 +30,8 @@ pub fn call_router() -> Router<AppState> {
         .route("/call/webrtc", get(webrtc_handler))
         .route("/call/sip", get(sip_handler))
         .route("/iceservers", get(get_iceservers))
+        .route("/list", get(list_active_calls))
+        .route("/kill/{id}", get(kill_active_call))
 }
 
 pub fn playbook_router() -> Router<AppState> {
@@ -235,6 +238,39 @@ pub(crate) async fn get_iceservers(State(state): State<AppState>) -> Response {
         ..Default::default()
     }])
     .into_response()
+}
+
+pub(crate) async fn list_active_calls(State(state): State<AppState>) -> Response {
+    let calls = state
+        .active_calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, c)| {
+            let cs = c.call_state.read().unwrap();
+            json!({
+                "id": c.session_id,
+                "callType": c.call_type,
+                "cs.option": cs.option,
+                "ringTime": cs.ring_time,
+                "startTime": cs.answer_time,
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({ "active_calls": calls })).into_response()
+}
+
+pub(crate) async fn kill_active_call(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    let active_calls = state.active_calls.lock().unwrap();
+    if let Some(call) = active_calls.get(&id) {
+        call.cancel_token.cancel();
+        Json(serde_json::json!({ "status": "killed", "id": id })).into_response()
+    } else {
+        Json(serde_json::json!({ "status": "not_found", "id": id })).into_response()
+    }
 }
 
 trait IntoWsMessage {

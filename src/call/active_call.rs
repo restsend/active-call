@@ -20,7 +20,7 @@ use std::{
 };
 use tokio::{fs::File, select, sync::Mutex, time::sleep};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use voice_engine::{
     CallOption, ReferOption,
     event::{EventReceiver, EventSender, SessionEvent},
@@ -63,6 +63,7 @@ pub enum ActiveCallType {
     #[default]
     Sip,
 }
+
 #[derive(Default)]
 pub struct ActiveCallState {
     pub session_id: String,
@@ -93,6 +94,7 @@ pub struct ActiveCall {
     pub auto_hangup: Arc<Mutex<Option<(u32, CallRecordHangupReason)>>>,
     pub wait_input_timeout: Arc<Mutex<Option<u32>>>,
     pub moh: Arc<Mutex<Option<String>>>,
+    pub current_play_id: Arc<Mutex<Option<String>>>,
     pub event_sender: EventSender,
     pub app_state: AppState,
     pub invitation: Invitation,
@@ -174,6 +176,7 @@ impl ActiveCall {
             auto_hangup: Arc::new(Mutex::new(None)),
             wait_input_timeout: Arc::new(Mutex::new(None)),
             moh: Arc::new(Mutex::new(None)),
+            current_play_id: Arc::new(Mutex::new(None)),
             event_sender,
             tts_handle: Mutex::new(None),
             app_state,
@@ -294,22 +297,39 @@ impl ActiveCall {
                     | SessionEvent::TrackStart { .. } => {
                         *input_timeout_expire_ref.lock().await = (0, 0);
                     }
-                    SessionEvent::TrackEnd { track_id, ssrc, .. } => {
+                    SessionEvent::TrackEnd {
+                        track_id,
+                        play_id,
+                        ssrc,
+                        ..
+                    } => {
                         if &track_id != server_side_track_id {
                             continue;
                         }
 
+                        let mut current_guard = self.current_play_id.lock().await;
+                        if play_id != *current_guard {
+                            debug!(
+                                session_id = self.session_id,
+                                ?play_id,
+                                current = ?*current_guard,
+                                "ignoring interrupted track end"
+                            );
+                            continue;
+                        }
+                        *current_guard = None;
+                        drop(current_guard);
+
                         let moh_path = moh.lock().await.clone();
                         if let Some(path) = moh_path {
-                            info!(session_id = self.session_id, ssrc, "looping moh: {}", path);
+                            info!(session_id = self.session_id, "looping moh: {}", path);
                             let ssrc = rand::random::<u32>();
                             let file_track = FileTrack::new(self.server_side_track_id.clone())
                                 .with_play_id(Some(path.clone()))
                                 .with_ssrc(ssrc)
                                 .with_path(path.clone())
                                 .with_cancel_token(self.cancel_token.child_token());
-                            self.media_stream
-                                .update_track(Box::new(file_track), Some(path))
+                            self.update_track_wrapper(Box::new(file_track), Some(path))
                                 .await;
                             continue;
                         }
@@ -372,8 +392,7 @@ impl ActiveCall {
                                 .with_ssrc(ssrc)
                                 .with_path(next_path.clone())
                                 .with_cancel_token(self.cancel_token.child_token());
-                            self.media_stream
-                                .update_track(Box::new(file_track), Some(next_path))
+                            self.update_track_wrapper(Box::new(file_track), Some(next_path))
                                 .await;
                             continue;
                         }
@@ -536,8 +555,7 @@ impl ActiveCall {
                 cancel_token,
                 opt.clone(),
             );
-            self.media_stream
-                .update_track(Box::new(media_pass_track), None)
+            self.update_track_wrapper(Box::new(media_pass_track), None)
                 .await;
         }
 
@@ -761,7 +779,7 @@ impl ActiveCall {
 
         new_handle.try_send(play_command)?;
         *self.tts_handle.lock().await = Some(new_handle);
-        self.media_stream.update_track(tts_track, play_id).await;
+        self.update_track_wrapper(tts_track, play_id).await;
         Ok(())
     }
 
@@ -793,8 +811,7 @@ impl ActiveCall {
             _ => *self.auto_hangup.lock().await = None,
         }
         *self.wait_input_timeout.lock().await = wait_input_timeout;
-        self.media_stream
-            .update_track(Box::new(file_track), play_id)
+        self.update_track_wrapper(Box::new(file_track), play_id)
             .await;
         Ok(())
     }
@@ -901,6 +918,8 @@ impl ActiveCall {
         };
 
         let mut invite_option = call_option.build_invite_option()?;
+        invite_option.call_id = Some(self.session_id.clone());
+
         let headers = invite_option.headers.get_or_insert_with(|| Vec::new());
 
         self.call_state
@@ -951,11 +970,12 @@ impl ActiveCall {
             .and_then(|o| o.auto_hangup)
             .unwrap_or(true);
 
-        if auto_hangup_requested && moh.is_none() {
+        if auto_hangup_requested {
             *self.auto_hangup.lock().await = Some((ssrc, CallRecordHangupReason::ByRefer));
         } else {
             *self.auto_hangup.lock().await = None;
         }
+
         let timeout_secs = refer_option.as_ref().and_then(|o| o.timeout).unwrap_or(30);
 
         info!(
@@ -1332,8 +1352,13 @@ impl ActiveCall {
             track.append_processor(processor);
         }
 
-        self.media_stream.update_track(track, None).await;
+        self.update_track_wrapper(track, None).await;
         Ok(())
+    }
+
+    pub async fn update_track_wrapper(&self, track: Box<dyn Track>, play_id: Option<String>) {
+        *self.current_play_id.lock().await = play_id.clone();
+        self.media_stream.update_track(track, play_id).await;
     }
 
     pub async fn create_websocket_track(
@@ -1477,15 +1502,22 @@ impl ActiveCall {
 
         if let Some(moh) = moh {
             *self.moh.lock().await = Some(moh.clone());
-            let ssrc = rand::random::<u32>();
-            let file_track = FileTrack::new(self.server_side_track_id.clone())
-                .with_play_id(Some(moh.clone()))
-                .with_ssrc(ssrc)
-                .with_path(moh.clone())
-                .with_cancel_token(self.cancel_token.child_token());
-            self.media_stream
-                .update_track(Box::new(file_track), Some(moh))
-                .await;
+            let current = self.current_play_id.lock().await.clone();
+            if current.is_none() {
+                let ssrc = rand::random::<u32>();
+                let file_track = FileTrack::new(self.server_side_track_id.clone())
+                    .with_play_id(Some(moh.clone()))
+                    .with_ssrc(ssrc)
+                    .with_path(moh.clone())
+                    .with_cancel_token(self.cancel_token.child_token());
+                self.update_track_wrapper(Box::new(file_track), Some(moh))
+                    .await;
+            } else {
+                info!(
+                    session_id = self.session_id,
+                    "Something is playing, MOH will start after it ends"
+                );
+            }
         } else {
             let track = rtp_track_to_setup.take().unwrap();
             self.setup_track_with_stream(&call_option, track)
