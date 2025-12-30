@@ -1,6 +1,6 @@
 [package]
 name = "active-call"
-version = "0.3.18"
+version = "0.3.19"
 edition = "2024"
 authors = ["jinti<shenjindi@fourz.cn>"]
 description = "A SIP/WebRTC voice agent"
@@ -13,7 +13,7 @@ categories = ["network-programming", "multimedia"]
 [dependencies]
 voice-engine = { version = "0.3.30", features = ["opus"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.146"
+serde_json = "1.0.148"
 anyhow = "1"
 async-trait = "0.1.88"
 async-stream = "0.3.6"

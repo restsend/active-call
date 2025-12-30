@@ -24,8 +24,9 @@ use tracing::{debug, info, warn};
 use voice_engine::{
     CallOption, ReferOption,
     event::{EventReceiver, EventSender, SessionEvent},
-    media::TrackId,
     media::{
+        TrackId,
+        codecs::CodecType,
         engine::StreamEngine,
         negotiate::strip_ipv6_candidates,
         recorder::RecorderOption,
@@ -1167,6 +1168,30 @@ impl ActiveCall {
         if let Some(ref external_ip) = self.app_state.config.external_ip {
             rtp_track = rtp_track.with_external_addr(external_ip.parse()?);
         }
+        if let Some(ref codecs) = self.app_state.config.codecs {
+            let mut enable_codecs = vec![];
+            for c in codecs {
+                match c.to_lowercase().as_str() {
+                    "pcmu" | "g711u" => enable_codecs.push(CodecType::PCMU),
+                    "pcma" | "g711a" => enable_codecs.push(CodecType::PCMA),
+                    "opus" => enable_codecs.push(CodecType::Opus),
+                    "g722" => enable_codecs.push(CodecType::G722),
+                    "g729" => enable_codecs.push(CodecType::G729),
+                    other => {
+                        warn!(
+                            session_id = self.session_id,
+                            codec = other,
+                            "unsupported codec in config, ignoring"
+                        );
+                    }
+                }
+            }
+
+            if !enable_codecs.is_empty() {
+                enable_codecs.push(CodecType::TelephoneEvent); // Always enable DTMF
+                rtp_track = rtp_track.with_enabled_codecs(enable_codecs);
+            }
+        };
         rtp_track.build().await
     }
 

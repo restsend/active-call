@@ -125,7 +125,7 @@ pub struct Config {
     pub graceful_shutdown: Option<bool>,
     pub handler: Option<InviteHandlerConfig>,
     pub accept_timeout: Option<String>,
-
+    pub codecs: Option<Vec<String>>,
     pub external_ip: Option<String>,
     #[serde(default = "default_config_rtp_start_port")]
     pub rtp_start_port: Option<u16>,
@@ -219,6 +219,7 @@ impl Default for Config {
             media_cache_path: default_config_media_cache_path(),
             callrecord: None,
             ice_servers: None,
+            codecs: None,
             external_ip: None,
             rtp_start_port: default_config_rtp_start_port(),
             rtp_end_port: default_config_rtp_end_port(),
