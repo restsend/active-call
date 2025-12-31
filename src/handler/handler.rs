@@ -7,6 +7,7 @@ use crate::{
     handler::playbook,
     playbook::{Playbook, PlaybookRunner},
 };
+use crate::{event::SessionEvent, media::track::TrackConfig};
 use axum::{
     Json, Router,
     extract::{Path, Query, State, WebSocketUpgrade, ws::Message},
@@ -16,13 +17,13 @@ use axum::{
 use bytes::Bytes;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
+use rustrtc::IceServer;
 use serde_json::json;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{join, select};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use voice_engine::{IceServer, event::SessionEvent, media::track::TrackConfig};
 
 pub fn call_router() -> Router<AppState> {
     Router::new()
@@ -175,7 +176,7 @@ pub async fn call_handler(
                 ticker.tick().await;
                 let payload = Utc::now().to_rfc3339();
                 let event = SessionEvent::Ping {
-                    timestamp: voice_engine::media::get_timestamp(),
+                    timestamp: crate::media::get_timestamp(),
                     payload: Some(payload),
                 };
                 if let Err(_) = active_call.event_sender.send(event) {
@@ -277,7 +278,7 @@ trait IntoWsMessage {
     fn into_ws_message(self) -> Result<Message, serde_json::Error>;
 }
 
-impl IntoWsMessage for voice_engine::event::SessionEvent {
+impl IntoWsMessage for crate::event::SessionEvent {
     fn into_ws_message(self) -> Result<Message, serde_json::Error> {
         match self {
             SessionEvent::Binary { data, .. } => Ok(Message::Binary(data.into())),

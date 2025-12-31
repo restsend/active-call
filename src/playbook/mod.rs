@@ -2,11 +2,11 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
 use tokio::fs;
-use voice_engine::EouOption;
-use voice_engine::media::recorder::RecorderOption;
-use voice_engine::media::vad::VADOption;
-use voice_engine::synthesis::SynthesisOption;
-use voice_engine::transcription::TranscriptionOption;
+use crate::EouOption;
+use crate::media::recorder::RecorderOption;
+use crate::media::vad::VADOption;
+use crate::synthesis::SynthesisOption;
+use crate::transcription::TranscriptionOption;
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]

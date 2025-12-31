@@ -1,7 +1,7 @@
 use crate::call::Command;
 use anyhow::Result;
 use async_trait::async_trait;
-use voice_engine::event::SessionEvent;
+use crate::event::SessionEvent;
 
 #[async_trait]
 pub trait DialogueHandler: Send + Sync {
@@ -13,7 +13,7 @@ pub trait DialogueHandler: Send + Sync {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use voice_engine::event::SessionEvent;
+    use crate::event::SessionEvent;
 
     struct RecordingHandler;
 

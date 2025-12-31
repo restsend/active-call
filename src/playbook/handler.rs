@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use tracing::{info, warn};
-use voice_engine::ReferOption;
-use voice_engine::event::SessionEvent;
+use crate::ReferOption;
+use crate::event::SessionEvent;
 
 use super::LlmConfig;
 use super::dialogue::DialogueHandler;
@@ -130,6 +130,7 @@ pub struct LlmHandler {
     provider: Box<dyn LlmProvider>,
     rag_retriever: Arc<dyn RagRetriever>,
     is_speaking: bool,
+    event_sender: Option<crate::event::EventSender>,
 }
 
 impl LlmHandler {
@@ -160,6 +161,23 @@ impl LlmHandler {
             provider,
             rag_retriever,
             is_speaking: false,
+            event_sender: None,
+        }
+    }
+
+    pub fn set_event_sender(&mut self, sender: crate::event::EventSender) {
+        self.event_sender = Some(sender);
+    }
+
+    fn send_debug_event(&self, key: &str, data: serde_json::Value) {
+        if let Some(sender) = &self.event_sender {
+            let event = crate::event::SessionEvent::Metrics {
+                timestamp: crate::media::get_timestamp(),
+                key: key.to_string(),
+                duration: 0,
+                data,
+            };
+            let _ = sender.send(event);
         }
     }
 
@@ -183,7 +201,18 @@ impl LlmHandler {
     }
 
     async fn generate_response(&mut self) -> Result<Vec<Command>> {
+        // Send debug event - LLM call started
+        self.send_debug_event("llm_call_start", json!({
+            "history_length": self.history.len(),
+        }));
+
         let initial = self.call_llm().await?;
+
+        // Send debug event - LLM response received
+        self.send_debug_event("llm_response", json!({
+            "response": initial,
+        }));
+
         self.interpret_response(initial).await
     }
 
@@ -206,22 +235,57 @@ impl LlmHandler {
                 if let Some(tools) = structured.tools {
                     for tool in tools {
                         match tool {
-                            ToolInvocation::Hangup { reason, initiator } => {
-                                tool_commands.push(Command::Hangup { reason, initiator });
-                            }
-                            ToolInvocation::Refer {
-                                caller,
-                                callee,
-                                options,
-                            } => {
-                                tool_commands.push(Command::Refer {
-                                    caller,
-                                    callee,
-                                    options,
+                            ToolInvocation::Hangup { ref reason, ref initiator } => {
+                                // Send debug event
+                                self.send_debug_event("tool_invocation", json!({
+                                    "tool": "Hangup",
+                                    "params": {
+                                        "reason": reason,
+                                        "initiator": initiator,
+                                    }
+                                }));
+                                tool_commands.push(Command::Hangup {
+                                    reason: reason.clone(),
+                                    initiator: initiator.clone()
                                 });
                             }
-                            ToolInvocation::Rag { query, source } => {
+                            ToolInvocation::Refer {
+                                ref caller,
+                                ref callee,
+                                ref options,
+                            } => {
+                                // Send debug event
+                                self.send_debug_event("tool_invocation", json!({
+                                    "tool": "Refer",
+                                    "params": {
+                                        "caller": caller,
+                                        "callee": callee,
+                                    }
+                                }));
+                                tool_commands.push(Command::Refer {
+                                    caller: caller.clone(),
+                                    callee: callee.clone(),
+                                    options: options.clone(),
+                                });
+                            }
+                            ToolInvocation::Rag { ref query, ref source } => {
+                                // Send debug event - RAG query started
+                                self.send_debug_event("tool_invocation", json!({
+                                    "tool": "Rag",
+                                    "params": {
+                                        "query": query,
+                                        "source": source,
+                                    }
+                                }));
+
                                 let rag_result = self.rag_retriever.retrieve(&query).await?;
+
+                                // Send debug event - RAG result
+                                self.send_debug_event("rag_result", json!({
+                                    "query": query,
+                                    "result": rag_result,
+                                }));
+
                                 let summary = if let Some(source) = source {
                                     format!("[{}] {}", source, rag_result)
                                 } else {
@@ -363,7 +427,7 @@ mod tests {
     use async_trait::async_trait;
     use std::collections::VecDeque;
     use std::sync::Mutex;
-    use voice_engine::event::SessionEvent;
+    use crate::event::SessionEvent;
 
     struct TestProvider {
         responses: Mutex<VecDeque<String>>,
@@ -492,6 +556,169 @@ mod tests {
             }) if text == "Final answer" && *timeout == 10000
         ));
         assert_eq!(rag.recorded_queries(), vec!["policy".to_string()]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_full_dialogue_flow() -> Result<()> {
+        let responses = vec![
+            "Hello! How can I help you today?".to_string(),
+            r#"{"text": "I can help with that. Anything else?", "waitInputTimeout": 5000}"#
+                .to_string(),
+            r#"{"text": "Goodbye!", "tools": [{"name": "hangup", "reason": "completed"}]}"#
+                .to_string(),
+        ];
+
+        let provider = Box::new(TestProvider::new(responses));
+        let config = LlmConfig {
+            greeting: Some("Welcome to the voice assistant.".to_string()),
+            ..Default::default()
+        };
+
+        let mut handler = LlmHandler::with_provider(config, provider, Arc::new(NoopRagRetriever));
+
+        // 1. Start the dialogue
+        let commands = handler.on_start().await?;
+        assert_eq!(commands.len(), 1);
+        if let Command::Tts { text, .. } = &commands[0] {
+            assert_eq!(text, "Welcome to the voice assistant.");
+        } else {
+            panic!("Expected Tts command");
+        }
+
+        // 2. User says something
+        let event = SessionEvent::AsrFinal {
+            track_id: "test".to_string(),
+            timestamp: 0,
+            index: 0,
+            start_time: None,
+            end_time: None,
+            text: "I need help".to_string(),
+        };
+        let commands = handler.on_event(&event).await?;
+        assert_eq!(commands.len(), 1);
+        if let Command::Tts { text, .. } = &commands[0] {
+            assert_eq!(text, "Hello! How can I help you today?");
+        } else {
+            panic!("Expected Tts command");
+        }
+
+        // 3. User says something else
+        let event = SessionEvent::AsrFinal {
+            track_id: "test".to_string(),
+            timestamp: 0,
+            index: 1,
+            start_time: None,
+            end_time: None,
+            text: "Tell me a joke".to_string(),
+        };
+        let commands = handler.on_event(&event).await?;
+        assert_eq!(commands.len(), 1);
+        if let Command::Tts {
+            text,
+            wait_input_timeout,
+            ..
+        } = &commands[0]
+        {
+            assert_eq!(text, "I can help with that. Anything else?");
+            assert_eq!(*wait_input_timeout, Some(5000));
+        } else {
+            panic!("Expected Tts command");
+        }
+
+        // 4. User says goodbye
+        let event = SessionEvent::AsrFinal {
+            track_id: "test".to_string(),
+            timestamp: 0,
+            index: 2,
+            start_time: None,
+            end_time: None,
+            text: "That's all, thanks".to_string(),
+        };
+        let commands = handler.on_event(&event).await?;
+        // Should have Tts and Hangup
+        assert_eq!(commands.len(), 2);
+
+        let has_tts = commands
+            .iter()
+            .any(|c| matches!(c, Command::Tts { text, .. } if text == "Goodbye!"));
+        let has_hangup = commands.iter().any(|c| matches!(c, Command::Hangup { .. }));
+
+        assert!(has_tts);
+        assert!(has_hangup);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_interruption_logic() -> Result<()> {
+        let provider = Box::new(TestProvider::new(vec!["Some long response".to_string()]));
+        let mut handler =
+            LlmHandler::with_provider(LlmConfig::default(), provider, Arc::new(NoopRagRetriever));
+
+        // 1. Trigger a response
+        let event = SessionEvent::AsrFinal {
+            track_id: "test".to_string(),
+            timestamp: 0,
+            index: 0,
+            start_time: None,
+            end_time: None,
+            text: "hello".to_string(),
+        };
+        handler.on_event(&event).await?;
+        assert!(handler.is_speaking);
+
+        // 2. Simulate user starting to speak (AsrDelta)
+        let event = SessionEvent::AsrDelta {
+            track_id: "test".to_string(),
+            timestamp: 0,
+            index: 0,
+            start_time: None,
+            end_time: None,
+            text: "I...".to_string(),
+        };
+        let commands = handler.on_event(&event).await?;
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(commands[0], Command::Interrupt { .. }));
+        assert!(!handler.is_speaking);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rag_iteration_limit() -> Result<()> {
+        // Provider that always returns a RAG tool call
+        let rag_instruction = r#"{"tools": [{"name": "rag", "query": "endless"}]}"#;
+        let provider = Box::new(TestProvider::new(vec![
+            rag_instruction.to_string(),
+            rag_instruction.to_string(),
+            rag_instruction.to_string(),
+            rag_instruction.to_string(),
+            "Should not reach here".to_string(),
+        ]));
+
+        let mut handler = LlmHandler::with_provider(
+            LlmConfig::default(),
+            provider,
+            Arc::new(RecordingRag::new()),
+        );
+
+        let event = SessionEvent::AsrFinal {
+            track_id: "test".to_string(),
+            timestamp: 0,
+            index: 0,
+            start_time: None,
+            end_time: None,
+            text: "loop".to_string(),
+        };
+
+        let commands = handler.on_event(&event).await?;
+        // After 3 attempts (MAX_RAG_ATTEMPTS), it should stop and return the last raw response
+        assert_eq!(commands.len(), 1);
+        if let Command::Tts { text, .. } = &commands[0] {
+            assert_eq!(text, rag_instruction);
+        }
 
         Ok(())
     }

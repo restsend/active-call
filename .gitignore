@@ -5,3 +5,5 @@ Cargo.lock
 /config/recorders
 /config/playbook
 .env
+*.decoded
+*.encoded

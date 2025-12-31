@@ -13,6 +13,7 @@ use crate::{
     },
 };
 
+use crate::media::{cache::set_cache_dir, engine::StreamEngine};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use humantime::parse_duration;
@@ -32,7 +33,6 @@ use tokio::select;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use voice_engine::media::{cache::set_cache_dir, engine::StreamEngine};
 
 pub struct AppStateInner {
     pub config: Arc<Config>,
@@ -568,7 +568,7 @@ impl AppStateBuilder {
         let local_ip = if !config.addr.is_empty() {
             std::net::IpAddr::from_str(config.addr.as_str())?
         } else {
-            voice_engine::net_tool::get_first_non_loopback_interface()?
+            crate::net_tool::get_first_non_loopback_interface()?
         };
         let transport_layer = rsipstack::transport::TransportLayer::new(token.clone());
         let local_addr: SocketAddr = format!("{}:{}", local_ip, config.udp_port).parse()?;

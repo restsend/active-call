@@ -47,7 +47,6 @@ docker run -d \
   --name active-call \
   -p 8080:8080 \
   -p 13050:13050/udp \
-  -p 20000-20100:20000-20100/udp \
   -v $(pwd)/config.toml:/app/config.toml:ro \
   -v $(pwd)/config:/app/config \
   ghcr.io/restsend/active-call:latest

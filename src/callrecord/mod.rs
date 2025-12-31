@@ -19,7 +19,7 @@ use std::{
 use tokio::{fs::File, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use voice_engine::CallOption;
+use crate::CallOption;
 
 pub type CallRecordSender = tokio::sync::mpsc::UnboundedSender<CallRecord>;
 pub type CallRecordReceiver = tokio::sync::mpsc::UnboundedReceiver<CallRecord>;
@@ -61,7 +61,7 @@ impl CallRecordEvent {
         };
         let event = Self {
             r#type,
-            timestamp: voice_engine::media::get_timestamp(),
+            timestamp: crate::media::get_timestamp(),
             content,
         };
         match serde_json::to_string(&event) {

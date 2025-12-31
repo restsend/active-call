@@ -3,55 +3,350 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Playbook Runner</title>
+    <title>Playbook Debugger</title>
     <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
         body {
-            font-family: sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
             padding: 20px;
         }
 
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+
+        h2 {
+            font-size: 18px;
+            margin: 15px 0 10px;
+            color: #4ec9b0;
+        }
+
+        h3 {
+            font-size: 14px;
+            margin: 10px 0 5px;
+            color: #9cdcfe;
+        }
+
         .container {
-            display: flex;
-            gap: 20px;
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            gap: 15px;
+            max-width: 1800px;
+        }
+
+        .sidebar {
+            background: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            padding: 15px;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-rows: auto 1fr;
+            gap: 15px;
         }
 
         .panel {
-            flex: 1;
-            border: 1px solid #ccc;
+            background: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            padding: 15px;
+        }
+
+        .debug-panels {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #0e639c;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            background: #1177bb;
+        }
+
+        button:disabled {
+            background: #3c3c3c;
+            color: #6e6e6e;
+            cursor: not-allowed;
+        }
+
+        button.danger {
+            background: #c72e2e;
+        }
+
+        button.danger:hover:not(:disabled) {
+            background: #e03838;
+        }
+
+        #playbook-list {
+            list-style: none;
+        }
+
+        #playbook-list li {
+            padding: 8px 12px;
+            margin: 4px 0;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        #playbook-list li:hover {
+            background: #2a2d2e;
+        }
+
+        #playbook-list li.active {
+            background: #094771;
+            font-weight: 600;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .status.idle {
+            background: #3c3c3c;
+            color: #858585;
+        }
+
+        .status.connected {
+            background: #0e7a0d;
+            color: #d7e5d7;
+        }
+
+        .status.calling {
+            background: #c27d0e;
+            color: #f0e7d6;
+        }
+
+        .log-container {
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
             padding: 10px;
-        }
-
-        #logs {
             height: 300px;
-            overflow-y: scroll;
-            background: #f0f0f0;
-            border: 1px solid #999;
-            padding: 5px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
         }
 
-        .active {
-            font-weight: bold;
-            color: green;
+        .log-entry {
+            padding: 3px 0;
+            border-bottom: 1px solid #2a2a2a;
+        }
+
+        .log-time {
+            color: #6a9955;
+            font-size: 11px;
+        }
+
+        .log-event {
+            color: #9cdcfe;
+            font-weight: 600;
+        }
+
+        .log-event.asr {
+            color: #4ec9b0;
+        }
+
+        .log-event.tts {
+            color: #dcdcaa;
+        }
+
+        .log-event.tool {
+            color: #c586c0;
+        }
+
+        .log-event.llm {
+            color: #569cd6;
+        }
+
+        .log-event.error {
+            color: #f48771;
+        }
+
+        .log-data {
+            color: #ce9178;
+            margin-left: 10px;
+        }
+
+        .tool-call {
+            background: #1e1e1e;
+            border-left: 3px solid #c586c0;
+            padding: 10px;
+            margin: 8px 0;
+            border-radius: 4px;
+        }
+
+        .tool-name {
+            color: #c586c0;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .tool-params {
+            color: #9cdcfe;
+            font-size: 12px;
+            margin-top: 5px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+
+        .conversation-entry {
+            background: #1e1e1e;
+            padding: 10px;
+            margin: 8px 0;
+            border-radius: 4px;
+            border-left: 3px solid #858585;
+        }
+
+        .conversation-entry.user {
+            border-left-color: #4ec9b0;
+        }
+
+        .conversation-entry.assistant {
+            border-left-color: #569cd6;
+        }
+
+        .conversation-entry.system {
+            border-left-color: #dcdcaa;
+        }
+
+        .conversation-role {
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .conversation-role.user {
+            color: #4ec9b0;
+        }
+
+        .conversation-role.assistant {
+            color: #569cd6;
+        }
+
+        .conversation-role.system {
+            color: #dcdcaa;
+        }
+
+        .conversation-text {
+            color: #d4d4d4;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .clear-btn {
+            background: #3c3c3c;
+            color: #d4d4d4;
+            font-size: 11px;
+            padding: 4px 10px;
+        }
+
+        .clear-btn:hover {
+            background: #505050;
+        }
+
+        ::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #424242;
+            border-radius: 5px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4e4e4e;
+        }
+
+        @media (max-width: 1200px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+
+            .debug-panels {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 
 <body>
-    <h1>Playbook Runner</h1>
+    <h1>🎭 Playbook Debugger</h1>
     <div class="container">
-        <div class="panel">
-            <h3>Playbooks</h3>
+        <div class="sidebar">
+            <h2>Playbooks</h2>
             <ul id="playbook-list"></ul>
         </div>
-        <div class="panel">
-            <h3>Controls</h3>
-            <button id="run-btn" disabled>Run Selected (WebRTC)</button>
-            <button id="hangup-btn" disabled>Hangup</button>
-            <div id="status">Status: Idle</div>
+        <div class="main-content">
+            <div class="panel">
+                <h2>Controls</h2>
+                <div class="controls">
+                    <button id="run-btn" disabled>▶ Run Selected</button>
+                    <button id="hangup-btn" class="danger" disabled>⏹ Hangup</button>
+                    <span id="status" class="status idle">Idle</span>
+                </div>
+            </div>
+            <div class="debug-panels">
+                <div class="panel">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2>🛠️ Tool Invocations</h2>
+                        <button class="clear-btn" onclick="clearToolCalls()">Clear</button>
+                    </div>
+                    <div id="tool-calls" class="log-container"></div>
+                </div>
+                <div class="panel">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2>💬 LLM Conversation</h2>
+                        <button class="clear-btn" onclick="clearConversation()">Clear</button>
+                    </div>
+                    <div id="conversation" class="log-container"></div>
+                </div>
+                <div class="panel" style="grid-column: 1 / -1;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2>📡 Event Stream</h2>
+                        <button class="clear-btn" onclick="clearEvents()">Clear</button>
+                    </div>
+                    <div id="events" class="log-container"></div>
+                </div>
+            </div>
         </div>
     </div>
-    <h3>Logs</h3>
-    <div id="logs"></div>
 
     <script>
         let selectedPlaybook = null;
@@ -67,23 +362,22 @@
                 playbooks.forEach(p => {
                     const li = document.createElement('li');
                     li.textContent = p.name;
-                    li.style.cursor = 'pointer';
                     li.onclick = () => {
                         selectedPlaybook = p.name;
-                        document.querySelectorAll('li').forEach(el => el.classList.remove('active'));
+                        document.querySelectorAll('#playbook-list li').forEach(el => el.classList.remove('active'));
                         li.classList.add('active');
                         document.getElementById('run-btn').disabled = false;
                     };
                     list.appendChild(li);
                 });
             } catch (e) {
-                log('Failed to load playbooks: ' + e);
+                logEvent('ERROR', 'Failed to load playbooks: ' + e);
             }
         }
 
         document.getElementById('run-btn').onclick = async () => {
             if (!selectedPlaybook) return;
-            log('Starting playbook: ' + selectedPlaybook);
+            logEvent('INFO', 'Starting playbook: ' + selectedPlaybook);
 
             try {
                 const res = await fetch('/api/playbook/run', {
@@ -93,11 +387,11 @@
                 });
                 const data = await res.json();
                 const sessionId = data.session_id;
-                log('Session ID: ' + sessionId);
+                logEvent('INFO', 'Session ID: ' + sessionId);
 
                 startCall(sessionId);
             } catch (e) {
-                log('Error: ' + e);
+                logEvent('ERROR', 'Failed to start playbook: ' + e);
             }
         };
 
@@ -106,76 +400,249 @@
             if (pc) pc.close();
             ws = null;
             pc = null;
-            document.getElementById('status').textContent = 'Status: Disconnected';
+            updateStatus('idle');
             document.getElementById('hangup-btn').disabled = true;
             document.getElementById('run-btn').disabled = false;
         };
 
         async function startCall(sessionId) {
-            pc = new RTCPeerConnection();
+            let offer;
 
-            // Add transceiver to ensure we offer audio
-            pc.addTransceiver('audio', { direction: 'sendrecv' });
+            try {
+                // Request microphone access
+                logEvent('MEDIA', 'Requesting microphone access...');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                logEvent('MEDIA', 'Microphone access granted');
 
-            // Handle incoming tracks (audio from server)
-            pc.ontrack = (event) => {
-                log('Received remote track');
-                const audio = new Audio();
-                audio.srcObject = event.streams[0];
-                audio.play();
-            };
+                // Get ICE servers
+                const iceServers = await fetch('/iceservers').then(r => r.json());
+                logEvent('WEBRTC', 'ICE servers: ' + JSON.stringify(iceServers));
 
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+                pc = new RTCPeerConnection({ iceServers });
+
+                // Add local audio track
+                stream.getTracks().forEach(track => {
+                    pc.addTrack(track, stream);
+                    logEvent('WEBRTC', 'Added local audio track: ' + track.kind);
+                });
+
+                pc.ontrack = (event) => {
+                    logEvent('WEBRTC', 'Received remote audio track');
+                    const audio = new Audio();
+                    audio.srcObject = event.streams[0];
+                    audio.autoplay = true;
+                    audio.play().then(() => {
+                        logEvent('AUDIO', 'Audio playback started');
+                    }).catch(e => {
+                        logEvent('ERROR', 'Audio play failed: ' + e.message);
+                    });
+                };
+
+                pc.oniceconnectionstatechange = () => {
+                    logEvent('WEBRTC', 'ICE connection state: ' + pc.iceConnectionState);
+                };
+
+                pc.onconnectionstatechange = () => {
+                    logEvent('WEBRTC', 'Connection state: ' + pc.connectionState);
+                };
+
+                offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                logEvent('WEBRTC', 'Created SDP offer (length: ' + offer.sdp.length + ')');
+            } catch (e) {
+                logEvent('ERROR', 'Failed to setup WebRTC: ' + e.message);
+                updateStatus('idle');
+                return;
+            }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const url = `${protocol}//${window.location.host}/call/webrtc?id=${sessionId}`;
             ws = new WebSocket(url);
 
             ws.onopen = () => {
-                log('WebSocket connected');
-                document.getElementById('status').textContent = 'Status: Connected';
+                logEvent('WS', 'WebSocket connected to server');
+                updateStatus('connected');
                 document.getElementById('hangup-btn').disabled = false;
                 document.getElementById('run-btn').disabled = true;
 
-                const cmd = {
+                const inviteCmd = {
                     command: 'invite',
-                    option: {
-                        sdp: offer.sdp
-                    }
+                    option: { offer: offer.sdp }
                 };
-                ws.send(JSON.stringify(cmd));
+                logEvent('WS', 'Sending invite command (SDP length: ' + offer.sdp.length + ')');
+                ws.send(JSON.stringify(inviteCmd));
+                logEvent('WS', 'Invite command sent');
             };
 
             ws.onmessage = async (event) => {
                 try {
                     const msg = JSON.parse(event.data);
-                    log('WS Event: ' + (msg.event || msg.command || 'unknown'));
+                    logEvent('WS', 'Received message: ' + msg.event);
+                    handleEvent(msg);
 
                     if (msg.event === 'answer') {
-                        await pc.setRemoteDescription({
-                            type: 'answer',
-                            sdp: msg.sdp
-                        });
-                        log('Call established (Remote Description Set)');
+                        logEvent('WEBRTC', 'Received SDP answer (length: ' + msg.sdp.length + ')');
+                        await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+                        logEvent('WEBRTC', 'Remote description set, call established');
+                        updateStatus('calling');
                     }
                 } catch (e) {
-                    log('Error parsing WS message: ' + e);
+                    logEvent('ERROR', 'Failed to handle message: ' + e.message);
+                    console.error('Message handling error:', e, event.data);
                 }
             };
 
+            ws.onerror = (error) => {
+                logEvent('ERROR', 'WebSocket error: ' + error.message);
+                console.error('WebSocket error:', error);
+            };
+
             ws.onclose = () => {
-                log('WebSocket closed');
-                document.getElementById('status').textContent = 'Status: Disconnected';
+                logEvent('WS', 'Disconnected');
+                updateStatus('idle');
                 document.getElementById('hangup-btn').disabled = true;
                 document.getElementById('run-btn').disabled = false;
             };
         }
 
-        function log(msg) {
-            const div = document.getElementById('logs');
-            div.innerHTML += `<div>${new Date().toLocaleTimeString()} ${msg}</div>`;
-            div.scrollTop = div.scrollHeight;
+        function handleEvent(event) {
+            const eventType = event.event || 'unknown';
+
+            // Log all events
+            logEvent(eventType.toUpperCase(), JSON.stringify(event, null, 2));
+
+            // Handle specific event types
+            switch (eventType) {
+                case 'asrFinal':
+                    addConversation('user', event.text, event.timestamp);
+                    break;
+
+                case 'trackStart':
+                    if (event.play_id) {
+                        // TTS started
+                        addConversation('assistant', '🔊 Speaking...', event.timestamp);
+                    }
+                    break;
+
+                case 'metrics':
+                    handleMetricsEvent(event);
+                    break;
+
+                case 'addHistory':
+                    addConversation(event.speaker, event.text, event.timestamp);
+                    break;
+            }
+        }
+
+        function handleMetricsEvent(event) {
+            const key = event.key;
+            const data = event.data;
+
+            switch (key) {
+                case 'tool_invocation':
+                    addToolCall(data.tool, data.params, event.timestamp);
+                    break;
+
+                case 'llm_response':
+                    addConversation('assistant', data.response, event.timestamp);
+                    break;
+
+                case 'rag_result':
+                    logEvent('RAG', `Query: ${data.query}\nResult: ${data.result}`);
+                    break;
+
+                case 'llm_call_start':
+                    logEvent('LLM', `Starting LLM call (history: ${data.history_length} messages)`);
+                    break;
+            }
+        }
+
+        function addToolCall(tool, params, timestamp) {
+            const container = document.getElementById('tool-calls');
+            const entry = document.createElement('div');
+            entry.className = 'tool-call';
+            entry.innerHTML = `
+                <div class="tool-name">🔧 ${tool}</div>
+                <div class="log-time">${formatTimestamp(timestamp)}</div>
+                <div class="tool-params">${JSON.stringify(params, null, 2)}</div>
+            `;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function addConversation(role, text, timestamp) {
+            const container = document.getElementById('conversation');
+            const entry = document.createElement('div');
+            entry.className = `conversation-entry ${role}`;
+            entry.innerHTML = `
+                <div class="conversation-role ${role}">${role}</div>
+                <div class="log-time">${formatTimestamp(timestamp)}</div>
+                <div class="conversation-text">${escapeHtml(text)}</div>
+            `;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function logEvent(type, message) {
+            const container = document.getElementById('events');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+
+            const typeClass = getEventClass(type);
+            entry.innerHTML = `
+                <span class="log-time">${new Date().toLocaleTimeString()}</span>
+                <span class="log-event ${typeClass}">[${type}]</span>
+                <span class="log-data">${escapeHtml(message)}</span>
+            `;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function getEventClass(type) {
+            const lower = type.toLowerCase();
+            if (lower.includes('asr')) return 'asr';
+            if (lower.includes('tts') || lower.includes('track')) return 'tts';
+            if (lower.includes('tool')) return 'tool';
+            if (lower.includes('llm')) return 'llm';
+            if (lower.includes('error')) return 'error';
+            return '';
+        }
+
+        function updateStatus(status) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = `status ${status}`;
+            statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+
+        function formatTimestamp(timestamp) {
+            if (!timestamp) return new Date().toLocaleTimeString();
+            // timestamp is in microseconds
+            const date = new Date(timestamp / 1000);
+            return date.toLocaleTimeString();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function clearToolCalls() {
+            document.getElementById('tool-calls').innerHTML = '';
+        }
+
+        function clearConversation() {
+            document.getElementById('conversation').innerHTML = '';
+        }
+
+        function clearEvents() {
+            document.getElementById('events').innerHTML = '';
         }
 
         loadPlaybooks();

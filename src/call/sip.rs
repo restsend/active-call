@@ -14,9 +14,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use voice_engine::event::EventSender;
-use voice_engine::media::TrackId;
-use voice_engine::media::stream::MediaStream;
+use crate::event::EventSender;
+use crate::media::TrackId;
+use crate::media::stream::MediaStream;
 
 pub struct DialogStateReceiverGuard {
     pub(super) dialog_layer: Arc<DialogLayer>,
@@ -136,9 +136,9 @@ impl InviteDialogStates {
             _ => "system".to_string(),
         };
         self.event_sender
-            .send(voice_engine::event::SessionEvent::TrackEnd {
+            .send(crate::event::SessionEvent::TrackEnd {
                 track_id: self.track_id.clone(),
-                timestamp: voice_engine::media::get_timestamp(),
+                timestamp: crate::media::get_timestamp(),
                 duration: call_state_ref
                     .answer_time
                     .map(|t| (Utc::now() - t).num_milliseconds())
@@ -204,9 +204,9 @@ impl DialogStateReceiverGuard {
 
                     states
                         .event_sender
-                        .send(voice_engine::event::SessionEvent::Ringing {
+                        .send(crate::event::SessionEvent::Ringing {
                             track_id: states.track_id.clone(),
-                            timestamp: voice_engine::media::get_timestamp(),
+                            timestamp: crate::media::get_timestamp(),
                             early_media: !answer.is_empty(),
                             refer: Some(refer),
                         })?;
@@ -240,9 +240,9 @@ impl DialogStateReceiverGuard {
                         if let Some(digit) = digit {
                             states
                                 .event_sender
-                                .send(voice_engine::event::SessionEvent::Dtmf {
+                                .send(crate::event::SessionEvent::Dtmf {
                                     track_id: states.track_id.clone(),
-                                    timestamp: voice_engine::media::get_timestamp(),
+                                    timestamp: crate::media::get_timestamp(),
                                     digit: digit.to_string(),
                                 })?;
                         }

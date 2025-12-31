@@ -43,7 +43,6 @@ USER activeuser
 # Expose ports
 EXPOSE 8080
 EXPOSE 13050/udp
-EXPOSE 20000-30000/udp
 
 # Default entrypoint
 ENTRYPOINT ["/app/active-call"]

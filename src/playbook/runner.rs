@@ -1,7 +1,7 @@
 use crate::call::ActiveCallRef;
 use anyhow::{Result, anyhow};
 use tracing::{error, info};
-use voice_engine::CallOption;
+use crate::CallOption;
 
 use super::{Playbook, PlaybookConfig, dialogue::DialogueHandler, handler::LlmHandler};
 
@@ -13,13 +13,20 @@ pub struct PlaybookRunner {
 impl PlaybookRunner {
     pub fn new(playbook: Playbook, call: ActiveCallRef) -> Result<Self> {
         if let Ok(mut state) = call.call_state.write() {
+            // Ensure option exists before applying config
+            if state.option.is_none() {
+                state.option = Some(CallOption::default());
+            }
             if let Some(option) = state.option.as_mut() {
                 apply_playbook_config(option, &playbook.config);
             }
         }
 
         let handler: Box<dyn DialogueHandler> = if let Some(llm_config) = playbook.config.llm {
-            Box::new(LlmHandler::new(llm_config))
+            let mut llm_handler = LlmHandler::new(llm_config);
+            // Set event sender for debugging
+            llm_handler.set_event_sender(call.event_sender.clone());
+            Box::new(llm_handler)
         } else {
             return Err(anyhow!(
                 "No valid dialogue handler configuration found (e.g. missing 'llm')"
@@ -47,10 +54,10 @@ impl PlaybookRunner {
 
         while let Ok(event) = event_receiver.recv().await {
             match &event {
-                voice_engine::event::SessionEvent::AsrFinal { text, .. } => {
+                crate::event::SessionEvent::AsrFinal { text, .. } => {
                     info!("User said: {}", text);
                 }
-                voice_engine::event::SessionEvent::Hangup { .. } => {
+                crate::event::SessionEvent::Hangup { .. } => {
                     info!("Call hung up, stopping playbook");
                     break;
                 }
@@ -96,7 +103,7 @@ pub fn apply_playbook_config(option: &mut CallOption, config: &PlaybookConfig) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use voice_engine::{
+    use crate::{
         EouOption, media::recorder::RecorderOption, media::vad::VADOption,
         synthesis::SynthesisOption, transcription::TranscriptionOption,
     };
