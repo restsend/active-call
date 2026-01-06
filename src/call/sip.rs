@@ -1,5 +1,8 @@
 use crate::call::active_call::ActiveCallStateRef;
 use crate::callrecord::CallRecordHangupReason;
+use crate::event::EventSender;
+use crate::media::TrackId;
+use crate::media::stream::MediaStream;
 use crate::useragent::invitation::PendingDialog;
 use anyhow::Result;
 use chrono::Utc;
@@ -14,9 +17,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use crate::event::EventSender;
-use crate::media::TrackId;
-use crate::media::stream::MediaStream;
 
 pub struct DialogStateReceiverGuard {
     pub(super) dialog_layer: Arc<DialogLayer>,
@@ -232,21 +232,28 @@ impl DialogStateReceiverGuard {
                         })
                         .ok();
                 }
-                DialogState::Info(dialog_id, req) => {
+                DialogState::Info(dialog_id, req, tx_handle) => {
                     let body_str = String::from_utf8_lossy(req.body());
                     info!(session_id=states.session_id, %dialog_id, body=%body_str, "dialog info received");
                     if body_str.starts_with("Signal=") {
                         let digit = body_str.trim_start_matches("Signal=").chars().next();
                         if let Some(digit) = digit {
-                            states
-                                .event_sender
-                                .send(crate::event::SessionEvent::Dtmf {
-                                    track_id: states.track_id.clone(),
-                                    timestamp: crate::media::get_timestamp(),
-                                    digit: digit.to_string(),
-                                })?;
+                            states.event_sender.send(crate::event::SessionEvent::Dtmf {
+                                track_id: states.track_id.clone(),
+                                timestamp: crate::media::get_timestamp(),
+                                digit: digit.to_string(),
+                            })?;
                         }
                     }
+                    tx_handle.reply(rsip::StatusCode::OK).await.ok();
+                }
+                DialogState::Updated(dialog_id, _req, tx_handle) => {
+                    info!(session_id = states.session_id, %dialog_id, "dialog update received");
+                    tx_handle.reply(rsip::StatusCode::OK).await.ok();
+                }
+                DialogState::Options(dialog_id, _req, tx_handle) => {
+                    info!(session_id = states.session_id, %dialog_id, "dialog options received");
+                    tx_handle.reply(rsip::StatusCode::OK).await.ok();
                 }
                 DialogState::Terminated(dialog_id, reason) => {
                     info!(

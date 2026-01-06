@@ -1,3 +1,4 @@
+use crate::CallOption;
 use crate::{
     call::ActiveCallType,
     config::{CallRecordConfig, S3Vendor},
@@ -6,7 +7,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::stream::{FuturesUnordered, StreamExt};
 use object_store::{
-    ObjectStore, aws::AmazonS3Builder, azure::MicrosoftAzureBuilder,
+    ObjectStore, ObjectStoreExt, PutPayload, aws::AmazonS3Builder, azure::MicrosoftAzureBuilder,
     gcp::GoogleCloudStorageBuilder, path::Path as ObjectPath,
 };
 use reqwest;
@@ -19,7 +20,6 @@ use std::{
 use tokio::{fs::File, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use crate::CallOption;
 
 pub type CallRecordSender = tokio::sync::mpsc::UnboundedSender<CallRecord>;
 pub type CallRecordReceiver = tokio::sync::mpsc::UnboundedReceiver<CallRecord>;
@@ -623,7 +623,10 @@ impl CallRecordManager {
         let local_files = vec![filename.clone()];
         let json_path = ObjectPath::from(filename);
         let buf_size = call_log_json.len();
-        match object_store.put(&json_path, call_log_json.into()).await {
+        match object_store
+            .put(&json_path, PutPayload::from(call_log_json))
+            .await
+        {
             Ok(_) => {
                 info!(
                     elapsed = start_time.elapsed().as_secs_f64(),
@@ -665,7 +668,10 @@ impl CallRecordManager {
                     }
                 };
                 let buf_size = file_content.len();
-                match object_store.put(media_path, file_content.into()).await {
+                match object_store
+                    .put(media_path, PutPayload::from(file_content))
+                    .await
+                {
                     Ok(_) => {
                         info!(
                             elapsed = start_time.elapsed().as_secs_f64(),

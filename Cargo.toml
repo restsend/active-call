@@ -18,7 +18,7 @@ not_vad = []
 [dependencies]
 opusic-sys = { version = "0.5.8", optional = true }
 audio-codec = { version = "0.3.29", features = ["opus"] }
-rustrtc = "0.2.30"
+rustrtc = "0.2.34"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.148"
 anyhow = "1"
@@ -28,30 +28,33 @@ axum = { version = "0.8.7", features = ["ws", "tokio", "multipart"] }
 tower-http = { version = "0.6.2", features = ["fs", "trace"] }
 bytes = "1"
 futures = "0.3.31"
-rustls = { version = "0.23.33", features = ["ring"] }
+rustls = { version = "0.23.36", features = ["ring"] }
 dotenv = "0.15"
-clap = { version = "4.5.53", features = ["derive"] }
+clap = { version = "4.5.54", features = ["derive"] }
 chrono = { version = "0.4.42", features = ["serde"] }
-tokio = { version = "1.47.1", features = ["full", "tracing"] }
-tokio-stream = { version = "0.1.17", features = ["net", "sync"] }
+tokio = { version = "1.49.0", features = ["full", "tracing"] }
+tokio-stream = { version = "0.1.18", features = ["net", "sync"] }
 tokio-tungstenite = { version = "0.28.0", features = [
     "rustls-tls-native-roots",
 ] }
-tokio-util = "0.7.16"
+tokio-util = "0.7.18"
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tracing-appender = "0.2.4"
 toml = "0.9.8"
 rsip = "0.4.0"
-rsipstack = "0.3.4"
+rsipstack = "0.4.0"
 uuid = { version = "1.19.0", features = ["v4"] }
-reqwest = { version = "0.12.28", features = [
+reqwest = { version = "0.13.1", features = [
     "json",
     "stream",
-    "rustls-tls",
+    "rustls",
     "multipart",
+    "form",
+    "query",
+    "gzip",
 ] }
-object_store = { version = "0.12.4", features = ["aws", "azure", "gcp"] }
+object_store = { version = "0.13.0", features = ["aws", "azure", "gcp"] }
 serde_with = "3.16.1"
 rand = "0.9.2"
 humantime = "2.1.0"
@@ -70,7 +73,7 @@ http = "1.4.0"
 ring = "0.17.14"
 urlencoding = "2.1.3"
 base64 = "0.22.1"
-url = "2.5.7"
+url = "2.5.8"
 unic-emoji = "0.9.0"
 realfft = "3.3"
 rmp3 = "0.3"
@@ -82,7 +85,7 @@ aws-lc-rs = { version = "1", features = ["bindgen"] }
 [dev-dependencies]
 tempfile = "3.23.0"
 warp = { version = "0.4.1", features = ["server", "websocket"] }
-tokio-test = "0.4"
+tokio-test = "0.4.5"
 mockall = "0.14.0"
 portpicker = "0.1.1"
 dotenv = "0.15"
