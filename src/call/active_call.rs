@@ -361,6 +361,15 @@ impl ActiveCall {
                             *input_timeout_expire_ref.lock().await = expire;
                         }
                     }
+                    SessionEvent::Inactivity { track_id, .. } => {
+                        info!(
+                            session_id = self.session_id,
+                            track_id, "inactivity timeout reached, hanging up"
+                        );
+                        self.do_hangup(Some(CallRecordHangupReason::InactivityTimeout), None)
+                            .await
+                            .ok();
+                    }
                     SessionEvent::Error { track_id, .. } => {
                         if &track_id != server_side_track_id {
                             continue;

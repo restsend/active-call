@@ -98,6 +98,8 @@ pub enum SessionEvent {
         timestamp: u64,
         completed: bool,
     },
+    ///Inactivity timeout
+    Inactivity { track_id: String, timestamp: u64 },
     Dtmf {
         track_id: String,
         timestamp: u64,

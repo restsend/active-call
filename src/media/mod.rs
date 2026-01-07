@@ -5,6 +5,7 @@ pub mod cache;
 pub mod denoiser;
 pub mod dtmf;
 pub mod engine;
+pub mod inactivity;
 pub mod jitter;
 pub mod negotiate;
 pub mod processor;

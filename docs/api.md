@@ -667,6 +667,7 @@ The `CallOption` object is used in `invite` and `accept` commands and contains t
   },
   "handshakeTimeout": "30s",
   "enableIpv6": false,
+  "inactivityTimeout": 50,
   "sip": {
     "username": "user",
     "password": "password",
@@ -744,6 +745,7 @@ The `CallOption` object is used in `invite` and `accept` commands and contains t
   - `packetSize` (number, optional): Packet size sent to WebSocket server in bytes (default: 2560)
 - `handshakeTimeout` (string, optional): Timeout for connection handshake (e.g., "30s")
 - `enableIpv6` (boolean, optional): Enable IPv6 support for networking
+- `inactivityTimeout` (number, optional): Timeout for audio inactivity in seconds
 - `sip` (SipOption, optional): SIP protocol configuration
   - `username` (string): SIP username for authentication
   - `password` (string): SIP password for authentication

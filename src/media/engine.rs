@@ -287,7 +287,7 @@ impl StreamEngine {
                 Some(ref option) => {
                     let asr_processor = engine
                         .create_asr_processor(
-                            track_id,
+                            track_id.clone(),
                             cancel_token.child_token(),
                             option.to_owned(),
                             event_sender.clone(),
@@ -307,6 +307,19 @@ impl StreamEngine {
                     processors.push(eou_processor);
                 }
                 None => {}
+            }
+            match option.inactivity_timeout {
+                Some(timeout_secs) if timeout_secs > 0 => {
+                    let inactivity_processor =
+                        crate::media::inactivity::InactivityProcessor::new(
+                            track_id.clone(),
+                            std::time::Duration::from_secs(timeout_secs),
+                            event_sender.clone(),
+                            cancel_token.child_token(),
+                        );
+                    processors.push(Box::new(inactivity_processor) as Box<dyn Processor>);
+                }
+                _ => {}
             }
 
             Ok(processors)

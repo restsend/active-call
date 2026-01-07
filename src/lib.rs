@@ -49,6 +49,7 @@ pub struct CallOption {
     pub media_pass: Option<MediaPassOption>,
     pub handshake_timeout: Option<String>,
     pub enable_ipv6: Option<bool>,
+    pub inactivity_timeout: Option<u64>, // inactivity timeout in seconds
     pub sip: Option<SipOption>,
     pub extra: Option<HashMap<String, String>>,
     pub codec: Option<String>, // pcmu, pcma, g722, pcm, only for websocket call
@@ -68,6 +69,7 @@ impl Default for CallOption {
             tts: None,
             media_pass: None,
             handshake_timeout: None,
+            inactivity_timeout: Some(50), // default 50 seconds
             enable_ipv6: None,
             sip: None,
             extra: None,
