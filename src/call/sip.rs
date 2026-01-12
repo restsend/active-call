@@ -91,7 +91,7 @@ pub(super) struct InviteDialogStates {
 
 impl InviteDialogStates {
     pub(super) fn on_terminated(&mut self) {
-        let mut call_state_ref = match self.call_state.write() {
+        let mut call_state_ref = match self.call_state.try_write() {
             Ok(cs) => cs,
             Err(_) => {
                 return;
@@ -166,12 +166,7 @@ impl DialogStateReceiverGuard {
             match event {
                 DialogState::Calling(dialog_id) => {
                     info!(session_id=states.session_id, %dialog_id, "dialog calling");
-                    states
-                        .call_state
-                        .as_ref()
-                        .write()
-                        .map(|mut cs| cs.session_id = dialog_id.to_string())
-                        .ok();
+                    states.call_state.write().await.session_id = dialog_id.to_string();
                 }
                 DialogState::Trying(_) => {}
                 DialogState::Early(dialog_id, resp) => {
@@ -180,27 +175,19 @@ impl DialogStateReceiverGuard {
                     let answer = String::from_utf8_lossy(body);
                     info!(session_id=states.session_id, %dialog_id,  "dialog earlyanswer: \n{}", answer);
 
-                    states
-                        .call_state
-                        .as_ref()
-                        .write()
-                        .map(|mut cs| {
-                            if cs.ring_time.is_none() {
-                                cs.ring_time.replace(Utc::now());
-                            }
-                            cs.last_status_code = code;
-                        })
-                        .ok();
+                    {
+                        let mut cs = states.call_state.write().await;
+                        if cs.ring_time.is_none() {
+                            cs.ring_time.replace(Utc::now());
+                        }
+                        cs.last_status_code = code;
+                    }
 
                     if !states.is_client {
                         continue;
                     }
 
-                    let refer = states
-                        .call_state
-                        .read()
-                        .map(|cs| cs.is_refer)
-                        .unwrap_or(false);
+                    let refer = states.call_state.read().await.is_refer;
 
                     states
                         .event_sender
@@ -221,16 +208,12 @@ impl DialogStateReceiverGuard {
                 }
                 DialogState::Confirmed(dialog_id, _) => {
                     info!(session_id=states.session_id, %dialog_id, "dialog confirmed");
-                    states
-                        .call_state
-                        .as_ref()
-                        .write()
-                        .map(|mut cs| {
-                            cs.session_id = dialog_id.to_string();
-                            cs.answer_time.replace(Utc::now());
-                            cs.last_status_code = 200;
-                        })
-                        .ok();
+                    {
+                        let mut cs = states.call_state.write().await;
+                        cs.session_id = dialog_id.to_string();
+                        cs.answer_time.replace(Utc::now());
+                        cs.last_status_code = 200;
+                    }
                 }
                 DialogState::Info(dialog_id, req, tx_handle) => {
                     let body_str = String::from_utf8_lossy(req.body());

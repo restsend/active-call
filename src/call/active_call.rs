@@ -32,13 +32,8 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rsipstack::dialog::{invitation::InviteOption, server_dialog::ServerInviteDialog};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
-use tokio::{fs::File, select, sync::Mutex, time::sleep};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use tokio::{fs::File, select, sync::Mutex, sync::RwLock, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -77,6 +72,15 @@ pub struct ActiveCallState {
     pub refer_callstate: Option<ActiveCallStateRef>,
     pub extras: Option<HashMap<String, serde_json::Value>>,
     pub is_refer: bool,
+
+    // Runtime state (migrated from ActiveCall to reduce multiple locks)
+    pub tts_handle: Option<SynthesisHandle>,
+    pub auto_hangup: Option<(u32, CallRecordHangupReason)>,
+    pub wait_input_timeout: Option<u32>,
+    pub moh: Option<String>,
+    pub current_play_id: Option<String>,
+    pub audio_receiver: Option<WebsocketBytesReceiver>,
+    pub ready_to_answer: Option<(String, Option<Box<dyn Track>>, ServerInviteDialog)>,
 }
 
 pub type ActiveCallRef = Arc<ActiveCall>;
@@ -89,19 +93,12 @@ pub struct ActiveCall {
     pub session_id: String,
     pub media_stream: Arc<MediaStream>,
     pub track_config: TrackConfig,
-    pub tts_handle: Mutex<Option<SynthesisHandle>>,
-    pub auto_hangup: Arc<Mutex<Option<(u32, CallRecordHangupReason)>>>,
-    pub wait_input_timeout: Arc<Mutex<Option<u32>>>,
-    pub moh: Arc<Mutex<Option<String>>>,
-    pub current_play_id: Arc<Mutex<Option<String>>>,
     pub event_sender: EventSender,
     pub app_state: AppState,
     pub invitation: Invitation,
     pub cmd_sender: CommandSender,
-    pub audio_receiver: Mutex<Option<WebsocketBytesReceiver>>,
     pub dump_events: bool,
     pub server_side_track_id: TrackId,
-    pub ready_to_answer: Mutex<Option<(String, Option<Box<dyn Track>>, ServerInviteDialog)>>,
 }
 
 pub struct ActiveCallGuard {
@@ -160,9 +157,11 @@ impl ActiveCall {
             .with_cancel_token(cancel_token.child_token());
         let media_stream = Arc::new(media_stream_builder.build());
         let call_state = Arc::new(RwLock::new(ActiveCallState {
+            session_id: session_id.clone(),
             start_time: Utc::now(),
             ssrc: rand::random::<u32>(),
             extras,
+            audio_receiver,
             ..Default::default()
         }));
         Self {
@@ -172,19 +171,12 @@ impl ActiveCall {
             call_state,
             media_stream,
             track_config,
-            auto_hangup: Arc::new(Mutex::new(None)),
-            wait_input_timeout: Arc::new(Mutex::new(None)),
-            moh: Arc::new(Mutex::new(None)),
-            current_play_id: Arc::new(Mutex::new(None)),
             event_sender,
-            tts_handle: Mutex::new(None),
             app_state,
             invitation,
             cmd_sender,
-            audio_receiver: Mutex::new(audio_receiver),
             dump_events,
             server_side_track_id: server_side_track_id.unwrap_or("server-side-track".to_string()),
-            ready_to_answer: Mutex::new(None),
         }
     }
 
@@ -258,8 +250,6 @@ impl ActiveCall {
 
     async fn process(&self) -> Result<()> {
         let mut event_receiver = self.event_sender.subscribe();
-        let auto_hangup = self.auto_hangup.clone();
-        let wait_input_timeout = self.wait_input_timeout.clone();
 
         let input_timeout_expire = Arc::new(Mutex::new((0u64, 0u32)));
         let input_timeout_expire_ref = input_timeout_expire.clone();
@@ -283,8 +273,7 @@ impl ActiveCall {
                 sleep(Duration::from_millis(100)).await;
             }
         };
-        let server_side_track_id = &self.server_side_track_id;
-        let moh = self.moh.clone();
+        let server_side_track_id = self.server_side_track_id.clone();
         let event_hook_loop = async move {
             while let Ok(event) = event_receiver.recv().await {
                 match event {
@@ -301,24 +290,29 @@ impl ActiveCall {
                         ssrc,
                         ..
                     } => {
-                        if &track_id != server_side_track_id {
+                        if track_id != server_side_track_id {
                             continue;
                         }
 
-                        let mut current_guard = self.current_play_id.lock().await;
-                        if play_id != *current_guard {
-                            debug!(
-                                session_id = self.session_id,
-                                ?play_id,
-                                current = ?*current_guard,
-                                "ignoring interrupted track end"
-                            );
-                            continue;
-                        }
-                        *current_guard = None;
-                        drop(current_guard);
+                        let (moh_path, auto_hangup, wait_timeout_val) = {
+                            let mut state = self.call_state.write().await;
+                            if play_id != state.current_play_id {
+                                debug!(
+                                    session_id = self.session_id,
+                                    ?play_id,
+                                    current = ?state.current_play_id,
+                                    "ignoring interrupted track end"
+                                );
+                                continue;
+                            }
+                            state.current_play_id = None;
+                            (
+                                state.moh.clone(),
+                                state.auto_hangup.clone(),
+                                state.wait_input_timeout.take(),
+                            )
+                        };
 
-                        let moh_path = moh.lock().await.clone();
                         if let Some(path) = moh_path {
                             info!(session_id = self.session_id, "looping moh: {}", path);
                             let ssrc = rand::random::<u32>();
@@ -332,25 +326,17 @@ impl ActiveCall {
                             continue;
                         }
 
-                        let mut auto_hangup_ref = auto_hangup.lock().await;
-                        if let Some(ref auto_hangup_ssrc) = *auto_hangup_ref {
-                            if auto_hangup_ssrc.0 == ssrc {
-                                let auto_hangup_ssrc = auto_hangup_ref.take();
-                                match auto_hangup_ssrc {
-                                    Some((_, auto_hangup_reason)) => {
-                                        info!(
-                                            session_id = self.session_id,
-                                            ssrc,
-                                            "auto hangup when track end track_id:{}",
-                                            track_id
-                                        );
-                                        self.do_hangup(Some(auto_hangup_reason), None).await.ok();
-                                    }
-                                    _ => {}
-                                }
+                        if let Some((hangup_ssrc, hangup_reason)) = auto_hangup {
+                            if hangup_ssrc == ssrc {
+                                info!(
+                                    session_id = self.session_id,
+                                    ssrc, "auto hangup when track end track_id:{}", track_id
+                                );
+                                self.do_hangup(Some(hangup_reason), None).await.ok();
                             }
                         }
-                        if let Some(timeout) = wait_input_timeout.lock().await.take() {
+
+                        if let Some(timeout) = wait_timeout_val {
                             let expire = if timeout > 0 {
                                 (crate::media::get_timestamp(), timeout)
                             } else {
@@ -369,21 +355,22 @@ impl ActiveCall {
                             .ok();
                     }
                     SessionEvent::Error { track_id, .. } => {
-                        if &track_id != server_side_track_id {
+                        if track_id != server_side_track_id {
                             continue;
                         }
 
-                        let mut moh_guard = moh.lock().await;
-                        let moh_path = moh_guard.clone();
-                        if let Some(path) = moh_path {
-                            let fallback = "./config/sounds/refer_moh.wav".to_string();
-                            let next_path =
-                                if path != fallback && std::path::Path::new(&fallback).exists() {
+                        let moh_info = {
+                            let mut state = self.call_state.write().await;
+                            if let Some(path) = state.moh.clone() {
+                                let fallback = "./config/sounds/refer_moh.wav".to_string();
+                                let next_path = if path != fallback
+                                    && std::path::Path::new(&fallback).exists()
+                                {
                                     info!(
                                         session_id = self.session_id,
                                         "moh error, switching to fallback: {}", fallback
                                     );
-                                    *moh_guard = Some(fallback.clone());
+                                    state.moh = Some(fallback.clone());
                                     fallback
                                 } else {
                                     info!(
@@ -392,7 +379,13 @@ impl ActiveCall {
                                     );
                                     path
                                 };
+                                Some(next_path)
+                            } else {
+                                None
+                            }
+                        };
 
+                        if let Some(next_path) = moh_info {
                             let ssrc = rand::random::<u32>();
                             let file_track = FileTrack::new(self.server_side_track_id.clone())
                                 .with_play_id(Some(next_path.clone()))
@@ -547,31 +540,9 @@ impl ActiveCall {
 
     async fn invite_or_accept(&self, mut option: CallOption, sender: String) -> Result<CallOption> {
         // Merge with existing configuration (e.g., from playbook)
-        if let Ok(state) = self.call_state.read() {
-            if let Some(existing_option) = &state.option {
-                // Merge: use incoming option fields if set, otherwise use existing
-                if option.asr.is_none() {
-                    option.asr = existing_option.asr.clone();
-                }
-                if option.tts.is_none() {
-                    option.tts = existing_option.tts.clone();
-                }
-                if option.vad.is_none() {
-                    option.vad = existing_option.vad.clone();
-                }
-                if option.denoise.is_none() {
-                    option.denoise = existing_option.denoise;
-                }
-                if option.recorder.is_none() {
-                    option.recorder = existing_option.recorder.clone();
-                }
-                if option.eou.is_none() {
-                    option.eou = existing_option.eou.clone();
-                }
-                if option.extra.is_none() {
-                    option.extra = existing_option.extra.clone();
-                }
-            }
+        {
+            let state = self.call_state.read().await;
+            option = state.merge_option(option);
         }
 
         option.check_default();
@@ -631,24 +602,24 @@ impl ActiveCall {
     }
 
     async fn do_accept(&self, mut option: CallOption) -> Result<()> {
-        let ready_to_answer = self.ready_to_answer.lock().await.is_none();
         let has_pending = self.invitation.has_pending_call(&self.session_id).is_some();
+        let ready_to_answer_val = {
+            let state = self.call_state.read().await;
+            state.ready_to_answer.is_none()
+        };
 
-        if ready_to_answer {
+        if ready_to_answer_val {
             if !has_pending {
                 return Err(anyhow::anyhow!("no pending call to accept"));
             }
             option = self.invite_or_accept(option, "accept".to_string()).await?;
         } else {
             option.check_default();
-            self.call_state
-                .write()
-                .as_mut()
-                .map_err(|e| anyhow::anyhow!("{}", e))?
-                .option = Some(option.clone());
+            self.call_state.write().await.option = Some(option.clone());
         }
 
-        if let Some((answer, track, dialog)) = self.ready_to_answer.lock().await.take() {
+        let ready = self.call_state.write().await.ready_to_answer.take();
+        if let Some((answer, track, dialog)) = ready {
             info!(
                 session_id = self.session_id,
                 track_id = track.as_ref().map(|t| t.id()),
@@ -661,6 +632,11 @@ impl ActiveCall {
 
             match dialog.accept(Some(headers), Some(answer.as_bytes().to_vec())) {
                 Ok(_) => {
+                    {
+                        let mut state = self.call_state.write().await;
+                        state.answer = Some(answer);
+                        state.answer_time = Some(Utc::now());
+                    }
                     self.finish_caller_stack(&option, track).await?;
                 }
                 Err(e) => {
@@ -697,7 +673,8 @@ impl ActiveCall {
         recorder: Option<RecorderOption>,
         early_media: Option<bool>,
     ) -> Result<()> {
-        if self.ready_to_answer.lock().await.is_none() {
+        let ready_to_answer_val = self.call_state.read().await.ready_to_answer.is_none();
+        if ready_to_answer_val {
             let option = CallOption {
                 recorder,
                 ..Default::default()
@@ -705,7 +682,8 @@ impl ActiveCall {
             let _ = self.invite_or_accept(option, "ringing".to_string()).await?;
         }
 
-        if let Some((answer, _, dialog)) = self.ready_to_answer.lock().await.as_ref() {
+        let state = self.call_state.read().await;
+        if let Some((answer, _, dialog)) = state.ready_to_answer.as_ref() {
             let (headers, body) = if early_media.unwrap_or_default() || ringtone.is_some() {
                 let headers = vec![rsip::Header::ContentType(
                     "application/sdp".to_string().into(),
@@ -720,8 +698,9 @@ impl ActiveCall {
                 session_id = self.session_id,
                 ringtone, early_media, "playing ringtone"
             );
-            if let Some(ringtone) = ringtone {
-                self.do_play(ringtone, None, None, None).await.ok();
+            if let Some(ringtone_url) = ringtone {
+                drop(state);
+                self.do_play(ringtone_url, None, None, None).await.ok();
             } else {
                 info!(session_id = self.session_id, "no ringtone to play");
             }
@@ -741,8 +720,9 @@ impl ActiveCall {
         wait_input_timeout: Option<u32>,
         base64: bool,
     ) -> Result<()> {
-        let tts_option = match self.call_state.read() {
-            Ok(ref call_state) => match call_state.option.clone().unwrap_or_default().tts {
+        let tts_option = {
+            let call_state = self.call_state.read().await;
+            match call_state.option.clone().unwrap_or_default().tts {
                 Some(opt) => opt.merge_with(option),
                 None => {
                     if let Some(opt) = option {
@@ -751,8 +731,7 @@ impl ActiveCall {
                         return Err(anyhow::anyhow!("no tts option available"));
                     }
                 }
-            },
-            Err(_) => return Err(anyhow::anyhow!("failed to read call state")),
+            }
         };
         let speaker = match speaker {
             Some(s) => Some(s),
@@ -783,20 +762,16 @@ impl ActiveCall {
         );
 
         let ssrc = rand::random::<u32>();
-        match auto_hangup {
-            Some(true) => {
-                *self.auto_hangup.lock().await = Some((ssrc, CallRecordHangupReason::BySystem))
-            }
-            _ => *self.auto_hangup.lock().await = None,
-        }
-        *self.wait_input_timeout.lock().await = wait_input_timeout;
-
         let should_interrupt = {
-            let mut current_id = self.current_play_id.lock().await;
-            let changed = play_id.is_some() && *current_id != play_id;
-            if changed {
-                *current_id = play_id.clone();
-            }
+            let mut state = self.call_state.write().await;
+            state.auto_hangup = match auto_hangup {
+                Some(true) => Some((ssrc, CallRecordHangupReason::BySystem)),
+                _ => None,
+            };
+            state.wait_input_timeout = wait_input_timeout;
+
+            let changed = play_id.is_some() && state.current_play_id != play_id;
+            state.current_play_id = play_id.clone();
             changed
         };
 
@@ -804,7 +779,8 @@ impl ActiveCall {
             let _ = self.do_interrupt(false).await;
         }
 
-        if let Some(tts_handle) = self.tts_handle.lock().await.as_ref() {
+        let existing_handle = self.call_state.read().await.tts_handle.clone();
+        if let Some(tts_handle) = existing_handle {
             match tts_handle.try_send(play_command) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -826,7 +802,7 @@ impl ActiveCall {
         .await?;
 
         new_handle.try_send(play_command)?;
-        *self.tts_handle.lock().await = Some(new_handle);
+        self.call_state.write().await.tts_handle = Some(new_handle);
         self.update_track_wrapper(tts_track, play_id).await;
         Ok(())
     }
@@ -838,7 +814,6 @@ impl ActiveCall {
         auto_hangup: Option<bool>,
         wait_input_timeout: Option<u32>,
     ) -> Result<()> {
-        self.tts_handle.lock().await.take();
         let ssrc = rand::random::<u32>();
         info!(
             session_id = self.session_id,
@@ -852,13 +827,17 @@ impl ActiveCall {
             .with_ssrc(ssrc)
             .with_path(url)
             .with_cancel_token(self.cancel_token.child_token());
-        match auto_hangup {
-            Some(true) => {
-                *self.auto_hangup.lock().await = Some((ssrc, CallRecordHangupReason::BySystem))
-            }
-            _ => *self.auto_hangup.lock().await = None,
+
+        {
+            let mut state = self.call_state.write().await;
+            state.tts_handle = None;
+            state.auto_hangup = match auto_hangup {
+                Some(true) => Some((ssrc, CallRecordHangupReason::BySystem)),
+                _ => None,
+            };
+            state.wait_input_timeout = wait_input_timeout;
         }
-        *self.wait_input_timeout.lock().await = wait_input_timeout;
+
         self.update_track_wrapper(Box::new(file_track), play_id)
             .await;
         Ok(())
@@ -877,8 +856,11 @@ impl ActiveCall {
     }
 
     async fn do_interrupt(&self, graceful: bool) -> Result<()> {
-        self.tts_handle.lock().await.take();
-        *self.moh.lock().await = None;
+        {
+            let mut state = self.call_state.write().await;
+            state.tts_handle = None;
+            state.moh = None;
+        }
         self.media_stream
             .remove_track(&self.server_side_track_id, graceful)
             .await;
@@ -913,11 +895,10 @@ impl ActiveCall {
         self.media_stream
             .stop(Some(hangup_reason.to_string()), initiator);
 
-        if let Ok(mut call_state) = self.call_state.write() {
-            if call_state.hangup_reason.is_none() {
-                call_state.hangup_reason.replace(hangup_reason);
-            }
-        }
+        self.call_state
+            .write()
+            .await
+            .set_hangup_reason(hangup_reason);
         Ok(())
     }
 
@@ -944,24 +925,21 @@ impl ActiveCall {
         let session_id = self.session_id.clone();
         let track_id = self.server_side_track_id.clone();
 
+        let recorder = {
+            let cs = self.call_state.read().await;
+            cs.option
+                .as_ref()
+                .map(|o| o.recorder.clone())
+                .unwrap_or_default()
+        };
+
         let call_option = CallOption {
             caller: Some(caller),
             callee: Some(callee.clone()),
             sip: refer_option.as_ref().and_then(|o| o.sip.clone()),
             asr: refer_option.as_ref().and_then(|o| o.asr.clone()),
             denoise: refer_option.as_ref().and_then(|o| o.denoise.clone()),
-            recorder: self
-                .call_state
-                .read()
-                .as_ref()
-                .map(|cs| {
-                    cs.option
-                        .as_ref()
-                        .map(|o| o.recorder.clone())
-                        .unwrap_or_default()
-                })
-                .ok()
-                .flatten(),
+            recorder,
             ..Default::default()
         };
 
@@ -970,25 +948,23 @@ impl ActiveCall {
 
         let headers = invite_option.headers.get_or_insert_with(|| Vec::new());
 
-        self.call_state
-            .read()
-            .map(|cs| {
-                cs.option.as_ref().map(|opt| {
-                    opt.callee.as_ref().map(|callee| {
-                        headers.push(rsip::Header::Other(
-                            "X-Referred-To".to_string(),
-                            callee.clone(),
-                        ));
-                    });
-                    opt.caller.as_ref().map(|caller| {
-                        headers.push(rsip::Header::Other(
-                            "X-Referred-From".to_string(),
-                            caller.clone(),
-                        ));
-                    });
-                });
-            })
-            .ok();
+        {
+            let cs = self.call_state.read().await;
+            if let Some(opt) = cs.option.as_ref() {
+                if let Some(callee) = opt.callee.as_ref() {
+                    headers.push(rsip::Header::Other(
+                        "X-Referred-To".to_string(),
+                        callee.clone(),
+                    ));
+                }
+                if let Some(caller) = opt.caller.as_ref() {
+                    headers.push(rsip::Header::Other(
+                        "X-Referred-From".to_string(),
+                        caller.clone(),
+                    ));
+                }
+            }
+        }
 
         headers.push(rsip::Header::Other(
             "X-Referred-Id".to_string(),
@@ -1004,14 +980,10 @@ impl ActiveCall {
             ..Default::default()
         }));
 
-        self.call_state
-            .write()
-            .as_mut()
-            .and_then(|cs| {
-                cs.refer_callstate.replace(refer_call_state.clone());
-                Ok(())
-            })
-            .ok();
+        {
+            let mut cs = self.call_state.write().await;
+            cs.refer_callstate.replace(refer_call_state.clone());
+        }
 
         let auto_hangup_requested = refer_option
             .as_ref()
@@ -1019,9 +991,10 @@ impl ActiveCall {
             .unwrap_or(true);
 
         if auto_hangup_requested {
-            *self.auto_hangup.lock().await = Some((ssrc, CallRecordHangupReason::ByRefer));
+            self.call_state.write().await.auto_hangup =
+                Some((ssrc, CallRecordHangupReason::ByRefer));
         } else {
-            *self.auto_hangup.lock().await = None;
+            self.call_state.write().await.auto_hangup = None;
         }
 
         let timeout_secs = refer_option.as_ref().and_then(|o| o.timeout).unwrap_or(30);
@@ -1048,7 +1021,9 @@ impl ActiveCall {
         )
         .await;
 
-        *self.moh.lock().await = None;
+        {
+            self.call_state.write().await.moh = None;
+        }
 
         let result = match r {
             Ok(res) => res,
@@ -1117,18 +1092,19 @@ impl ActiveCall {
     }
 
     pub async fn cleanup(&self) -> Result<()> {
-        self.tts_handle.lock().await.take();
+        self.call_state.write().await.tts_handle = None;
         self.media_stream.cleanup().await.ok();
         Ok(())
     }
 
-    pub fn get_callrecord(&self) -> CallRecord {
-        let call_state = self.call_state.read().unwrap();
-        call_state.build_callrecord(
-            self.app_state.clone(),
-            self.session_id.clone(),
-            self.call_type.clone(),
-        )
+    pub fn get_callrecord(&self) -> Option<CallRecord> {
+        self.call_state.try_read().ok().map(|call_state| {
+            call_state.build_callrecord(
+                self.app_state.clone(),
+                self.session_id.clone(),
+                self.call_type.clone(),
+            )
+        })
     }
 
     async fn dump_to_file(
@@ -1197,9 +1173,7 @@ impl ActiveCall {
             CallRecordEvent::write(CallRecordEventType::Event, event, &mut dump_file).await;
         }
     }
-}
 
-impl ActiveCall {
     pub async fn create_rtp_track(&self, track_id: TrackId, ssrc: u32) -> Result<RtcTrack> {
         let mut rtc_config = RtcTrackConfig::default();
         rtc_config.mode = rustrtc::TransportMode::Rtp;
@@ -1230,11 +1204,7 @@ impl ActiveCall {
     }
 
     async fn setup_caller_track(&self, option: CallOption) -> Result<()> {
-        self.call_state
-            .write()
-            .as_mut()
-            .map_err(|e| anyhow::anyhow!("{}", e))?
-            .option = Some(option.clone());
+        self.call_state.write().await.option = Some(option.clone());
         info!(
             session_id = self.session_id,
             call_type = ?self.call_type,
@@ -1244,7 +1214,7 @@ impl ActiveCall {
         let track = match self.call_type {
             ActiveCallType::Webrtc => Some(self.create_webrtc_track().await?),
             ActiveCallType::WebSocket => {
-                let audio_receiver = self.audio_receiver.lock().await.take();
+                let audio_receiver = self.call_state.write().await.audio_receiver.take();
                 if let Some(receiver) = audio_receiver {
                     Some(self.create_websocket_track(receiver).await?)
                 } else {
@@ -1263,11 +1233,13 @@ impl ActiveCall {
                         .await;
                 }
 
-                let invite_option =
-                    match self.call_state.read().as_ref().map(|cs| cs.option.as_ref()) {
-                        Ok(Some(option)) => option.build_invite_option()?,
+                let invite_option = {
+                    let cs = self.call_state.read().await;
+                    match cs.option.as_ref() {
+                        Some(option) => option.build_invite_option()?,
                         _ => return Err(anyhow::anyhow!("call option not found")),
-                    };
+                    }
+                };
 
                 match self
                     .create_outgoing_sip_track(
@@ -1358,24 +1330,25 @@ impl ActiveCall {
             self.setup_track_with_stream(&option, track).await?;
         }
 
-        match self.call_state.read() {
-            Ok(call_state) => {
-                if let Some(ref answer) = call_state.answer {
-                    info!(session_id = self.session_id, "call answer: {}", answer,);
-                    self.event_sender
-                        .send(SessionEvent::Answer {
-                            timestamp: crate::media::get_timestamp(),
-                            track_id: self.session_id.clone(),
-                            sdp: answer.clone(),
-                            refer: Some(false),
-                        })
-                        .ok();
-                }
-            }
-            Err(e) => {
+        {
+            let call_state = self.call_state.read().await;
+            if let Some(ref answer) = call_state.answer {
+                info!(
+                    session_id = self.session_id,
+                    "sending answer event: {}", answer,
+                );
+                self.event_sender
+                    .send(SessionEvent::Answer {
+                        timestamp: crate::media::get_timestamp(),
+                        track_id: self.session_id.clone(),
+                        sdp: answer.clone(),
+                        refer: Some(false),
+                    })
+                    .ok();
+            } else {
                 warn!(
                     session_id = self.session_id,
-                    "failed to read call state: {}", e
+                    "no answer in state to send event"
                 );
             }
         }
@@ -1416,7 +1389,7 @@ impl ActiveCall {
     }
 
     pub async fn update_track_wrapper(&self, track: Box<dyn Track>, play_id: Option<String>) {
-        *self.current_play_id.lock().await = play_id.clone();
+        self.call_state.write().await.current_play_id = play_id.clone();
         self.media_stream.update_track(track, play_id).await;
     }
 
@@ -1425,10 +1398,7 @@ impl ActiveCall {
         audio_receiver: WebsocketBytesReceiver,
     ) -> Result<Box<dyn Track>> {
         let (ssrc, codec) = {
-            let call_state = self
-                .call_state
-                .read()
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let call_state = self.call_state.read().await;
             (
                 call_state.ssrc,
                 call_state
@@ -1449,26 +1419,19 @@ impl ActiveCall {
             ssrc,
         );
 
-        self.call_state
-            .write()
-            .as_mut()
-            .and_then(|call_state| {
-                call_state.answer_time = Some(Utc::now());
-                call_state.answer = Some("".to_string());
-                call_state.last_status_code = 200;
-                Ok(())
-            })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        {
+            let mut call_state = self.call_state.write().await;
+            call_state.answer_time = Some(Utc::now());
+            call_state.answer = Some("".to_string());
+            call_state.last_status_code = 200;
+        }
 
         Ok(Box::new(ws_track))
     }
 
     pub(super) async fn create_webrtc_track(&self) -> Result<Box<dyn Track>> {
         let (ssrc, option) = {
-            let call_state = self
-                .call_state
-                .read()
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let call_state = self.call_state.read().await;
             (
                 call_state.ssrc,
                 call_state.option.clone().unwrap_or_default(),
@@ -1514,16 +1477,12 @@ impl ActiveCall {
             }
         }
 
-        self.call_state
-            .write()
-            .as_mut()
-            .and_then(|call_state| {
-                call_state.answer_time = Some(Utc::now());
-                call_state.answer = answer;
-                call_state.last_status_code = 200;
-                Ok(())
-            })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        {
+            let mut call_state = self.call_state.write().await;
+            call_state.answer_time = Some(Utc::now());
+            call_state.answer = answer;
+            call_state.last_status_code = 200;
+        }
         Ok(Box::new(webrtc_track))
     }
 
@@ -1536,10 +1495,7 @@ impl ActiveCall {
         moh: Option<String>,
         auto_hangup: bool,
     ) -> Result<String, rsipstack::Error> {
-        let ssrc = call_state_ref
-            .read()
-            .map_err(|e| rsipstack::Error::Error(e.to_string()))?
-            .ssrc;
+        let ssrc = call_state_ref.read().await.ssrc;
         let rtp_track = self
             .create_rtp_track(track_id.clone(), ssrc)
             .await
@@ -1550,41 +1506,44 @@ impl ActiveCall {
                 .local_description()
                 .map_err(|e| rsipstack::Error::Error(e.to_string()))?,
         );
-        let call_option = call_state_ref
-            .write()
-            .as_mut()
-            .ok()
-            .map(|cs| {
-                cs.option.as_mut().map(|o| {
-                    o.offer = offer.clone();
-                });
-                cs.start_time = Utc::now();
-                cs.option.clone()
-            })
-            .flatten()
-            .unwrap_or_default();
+
+        let call_option = {
+            let mut cs = call_state_ref.write().await;
+            if let Some(o) = cs.option.as_mut() {
+                o.offer = offer.clone();
+            }
+            cs.start_time = Utc::now();
+            cs.option.clone().unwrap_or_default()
+        };
 
         invite_option.offer = offer.clone().map(|s| s.into());
 
         let mut rtp_track_to_setup = Some(Box::new(rtp_track) as Box<dyn Track>);
 
         if let Some(moh) = moh {
-            *self.moh.lock().await = Some(moh.clone());
-            let current = self.current_play_id.lock().await.clone();
-            if current.is_none() {
-                let ssrc = rand::random::<u32>();
+            let ssrc_and_moh = {
+                let mut state = call_state_ref.write().await;
+                state.moh = Some(moh.clone());
+                if state.current_play_id.is_none() {
+                    let ssrc = rand::random::<u32>();
+                    Some((ssrc, moh.clone()))
+                } else {
+                    info!(
+                        session_id = self.session_id,
+                        "Something is playing, MOH will start after it ends"
+                    );
+                    None
+                }
+            };
+
+            if let Some((ssrc, moh_path)) = ssrc_and_moh {
                 let file_track = FileTrack::new(self.server_side_track_id.clone())
-                    .with_play_id(Some(moh.clone()))
+                    .with_play_id(Some(moh_path.clone()))
                     .with_ssrc(ssrc)
-                    .with_path(moh.clone())
+                    .with_path(moh_path.clone())
                     .with_cancel_token(self.cancel_token.child_token());
-                self.update_track_wrapper(Box::new(file_track), Some(moh))
+                self.update_track_wrapper(Box::new(file_track), Some(moh_path))
                     .await;
-            } else {
-                info!(
-                    session_id = self.session_id,
-                    "Something is playing, MOH will start after it ends"
-                );
             }
         } else {
             let track = rtp_track_to_setup.take().unwrap();
@@ -1629,7 +1588,7 @@ impl ActiveCall {
             .invite(invite_option, dlg_state_sender)
             .await?;
 
-        *self.moh.lock().await = None;
+        self.call_state.write().await.moh = None;
 
         if let Some(track) = rtp_track_to_setup {
             self.setup_track_with_stream(&call_option, track)
@@ -1649,20 +1608,21 @@ impl ActiveCall {
             }
         };
 
-        call_state_ref.write().as_mut().ok().map(|cs| {
+        {
+            let mut cs = call_state_ref.write().await;
             if cs.answer.is_none() {
-                cs.answer.replace(answer.clone());
+                cs.answer = Some(answer.clone());
             }
-        });
+            if auto_hangup {
+                cs.auto_hangup = Some((ssrc, CallRecordHangupReason::ByRefer));
+            }
+        }
 
         self.media_stream
             .update_remote_description(&track_id, &answer)
             .await
             .ok();
 
-        if auto_hangup {
-            *self.auto_hangup.lock().await = Some((ssrc, CallRecordHangupReason::ByRefer));
-        }
         Ok(answer)
     }
 
@@ -1744,9 +1704,7 @@ impl ActiveCall {
         let offer = String::from_utf8_lossy(&initial_request.body).to_string();
 
         let (ssrc, option) = {
-            let call_state = call_state_ref
-                .read()
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let call_state = call_state_ref.read().await;
             (
                 call_state.ssrc,
                 call_state.option.clone().unwrap_or_default(),
@@ -1756,10 +1714,10 @@ impl ActiveCall {
         match self.setup_answer_track(ssrc, &option, offer).await {
             Ok((offer, track)) => {
                 self.setup_track_with_stream(&option, track).await?;
-                self.ready_to_answer
-                    .lock()
-                    .await
-                    .replace((offer, None, pending_dialog.dialog));
+                {
+                    let mut state = self.call_state.write().await;
+                    state.ready_to_answer = Some((offer, None, pending_dialog.dialog));
+                }
             }
             Err(e) => {
                 return Err(anyhow::anyhow!("error creating track: {}", e));
@@ -1780,18 +1738,52 @@ impl Drop for ActiveCall {
     fn drop(&mut self) {
         info!(session_id = self.session_id, "dropping active call");
         if let Some(sender) = self.app_state.callrecord_sender.as_ref() {
-            let record = self.get_callrecord();
-            if let Err(e) = sender.send(record) {
-                warn!(
-                    session_id = self.session_id,
-                    "failed to send call record: {}", e
-                );
+            if let Some(record) = self.get_callrecord() {
+                if let Err(e) = sender.send(record) {
+                    warn!(
+                        session_id = self.session_id,
+                        "failed to send call record: {}", e
+                    );
+                }
             }
         }
     }
 }
 
 impl ActiveCallState {
+    pub fn merge_option(&self, mut option: CallOption) -> CallOption {
+        if let Some(existing) = &self.option {
+            if option.asr.is_none() {
+                option.asr = existing.asr.clone();
+            }
+            if option.tts.is_none() {
+                option.tts = existing.tts.clone();
+            }
+            if option.vad.is_none() {
+                option.vad = existing.vad.clone();
+            }
+            if option.denoise.is_none() {
+                option.denoise = existing.denoise;
+            }
+            if option.recorder.is_none() {
+                option.recorder = existing.recorder.clone();
+            }
+            if option.eou.is_none() {
+                option.eou = existing.eou.clone();
+            }
+            if option.extra.is_none() {
+                option.extra = existing.extra.clone();
+            }
+        }
+        option
+    }
+
+    pub fn set_hangup_reason(&mut self, reason: CallRecordHangupReason) {
+        if self.hangup_reason.is_none() {
+            self.hangup_reason = Some(reason);
+        }
+    }
+
     pub fn build_hangup_event(
         &self,
         track_id: TrackId,
@@ -1851,12 +1843,15 @@ impl ActiveCallState {
         };
 
         let refer_callrecord = self.refer_callstate.as_ref().and_then(|rc| {
-            let rc = rc.read().unwrap();
-            Some(Box::new(rc.build_callrecord(
-                app_state.clone(),
-                rc.session_id.clone(),
-                ActiveCallType::B2bua,
-            )))
+            if let Ok(rc) = rc.try_read() {
+                Some(Box::new(rc.build_callrecord(
+                    app_state.clone(),
+                    rc.session_id.clone(),
+                    ActiveCallType::B2bua,
+                )))
+            } else {
+                None
+            }
         });
 
         let caller = option.caller.clone().unwrap_or_default();

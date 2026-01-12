@@ -160,13 +160,19 @@ pub async fn call_handler(
 
         let mut event_receiver = active_call.event_sender.subscribe();
         let send_to_ws_loop = async {
-            while let Ok(event) = event_receiver.recv().await {
-                let message = match event.into_ws_message() {
-                    Ok(msg) => msg,
-                    Err(_) => continue,
-                };
-                if let Err(_) = ws_sender.send(message).await {
-                    break;
+            loop {
+                match event_receiver.recv().await {
+                    Ok(event) => {
+                        let message = match event.into_ws_message() {
+                            Ok(msg) => msg,
+                            Err(_) => continue,
+                        };
+                        if let Err(_) = ws_sender.send(message).await {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
                 }
             }
         };
@@ -253,14 +259,21 @@ pub(crate) async fn list_active_calls(State(state): State<AppState>) -> Response
         .unwrap()
         .iter()
         .map(|(_, c)| {
-            let cs = c.call_state.read().unwrap();
-            json!({
-                "id": c.session_id,
-                "callType": c.call_type,
-                "cs.option": cs.option,
-                "ringTime": cs.ring_time,
-                "startTime": cs.answer_time,
-            })
+            if let Ok(cs) = c.call_state.try_read() {
+                json!({
+                    "id": c.session_id,
+                    "callType": c.call_type,
+                    "cs.option": cs.option,
+                    "ringTime": cs.ring_time,
+                    "startTime": cs.answer_time,
+                })
+            } else {
+                json!({
+                    "id": c.session_id,
+                    "callType": c.call_type,
+                    "status": "locked",
+                })
+            }
         })
         .collect::<Vec<_>>();
     Json(serde_json::json!({ "active_calls": calls })).into_response()

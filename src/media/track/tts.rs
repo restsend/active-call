@@ -32,6 +32,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+#[derive(Clone)]
 pub struct SynthesisHandle {
     pub play_id: Option<String>,
     pub command_tx: SynthesisCommandSender,

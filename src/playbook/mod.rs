@@ -66,6 +66,16 @@ impl Playbook {
 
         let mut config: PlaybookConfig = serde_yaml::from_str(yaml_str)?;
         if let Some(llm) = config.llm.as_mut() {
+            if llm.api_key.is_none() {
+                if let Ok(key) = std::env::var("LLM_API_KEY") {
+                    llm.api_key = Some(key);
+                }
+            }
+            if llm.base_url.is_none() {
+                if let Ok(url) = std::env::var("LLM_BASE_URL") {
+                    llm.base_url = Some(url);
+                }
+            }
             llm.prompt = Some(prompt);
         }
 

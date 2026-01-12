@@ -18,7 +18,7 @@ impl PlaybookRunner {
     }
 
     pub fn new(playbook: Playbook, call: ActiveCallRef) -> Result<Self> {
-        if let Ok(mut state) = call.call_state.write() {
+        if let Ok(mut state) = call.call_state.try_write() {
             // Ensure option exists before applying config
             if state.option.is_none() {
                 state.option = Some(CallOption::default());
@@ -69,7 +69,8 @@ impl PlaybookRunner {
 
         // Wait for call to be established before running playbook greeting
         let mut answered = false;
-        if let Ok(state) = self.call.call_state.read() {
+        {
+            let state = self.call.call_state.read().await;
             if state.answer_time.is_some() {
                 answered = true;
             }
