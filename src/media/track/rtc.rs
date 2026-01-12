@@ -13,13 +13,11 @@ use audio_codec::CodecType;
 use bytes::Bytes;
 use futures::StreamExt;
 use rustrtc::{
-    AudioCapability, IceServer, PeerConnection, PeerConnectionEvent, PeerConnectionState,
-    RtcConfiguration, RtpCodecParameters, TransportMode,
+    AudioCapability, IceServer, MediaKind, PeerConnection, PeerConnectionEvent,
+    PeerConnectionState, RtcConfiguration, RtpCodecParameters, SdpType, TransportMode,
     config::MediaCapabilities,
     media::{
-        MediaStreamTrack, SampleStreamSource,
-        frame::{AudioFrame as RtcAudioFrame, MediaKind},
-        sample_track,
+        MediaStreamTrack, SampleStreamSource, frame::AudioFrame as RtcAudioFrame, sample_track,
         track::SampleStreamTrack,
     },
 };
@@ -103,7 +101,7 @@ impl RtcTrack {
         _codec: CodecType,
         _stream_id: Option<String>,
     ) -> (Arc<SampleStreamSource>, Arc<SampleStreamTrack>) {
-        let (source, track, _) = sample_track(MediaKind::Audio, 100);
+        let (source, track, _) = sample_track(rustrtc::media::MediaKind::Audio, 100);
         (Arc::new(source), track)
     }
 
@@ -368,34 +366,50 @@ impl RtcTrack {
         }
     }
 
-    pub fn parse_sdp_payload_types(&self, sdp: &str) {
-        let patterns = [
-            ("opus", CodecType::Opus),
-            ("pcmu", CodecType::PCMU),
-            ("pcma", CodecType::PCMA),
-            ("g722", CodecType::G722),
-            ("g729", CodecType::G729),
-            ("telephone-event", CodecType::TelephoneEvent),
-        ];
+    pub fn parse_sdp_payload_types(&self, sdp_type: SdpType, sdp_str: &str) -> Result<()> {
+        use crate::media::negotiate::parse_rtpmap;
+        let sdp = rustrtc::SessionDescription::parse(sdp_type, sdp_str)?;
 
-        for (name, codec_type) in patterns {
-            let re = format!(r"(?i)a=rtpmap:(\d+)\s+{}/", name);
-            if let Ok(reg) = regex::Regex::new(&re) {
-                if let Some(cap) = reg.captures(sdp) {
-                    if let Ok(pt) = cap[1].parse::<u8>() {
-                        info!(track_id=%self.track_id, "Negotiated payload type for {}: {}", name, pt);
-                        self.payload_type
-                            .store(pt, std::sync::atomic::Ordering::SeqCst);
-                        self.encoder.set_payload_type(pt, codec_type.clone());
-                        self.processor_chain
-                            .codec
-                            .lock()
-                            .unwrap()
-                            .set_payload_type(pt, codec_type);
+        if let Some(media) = sdp
+            .media_sections
+            .iter()
+            .find(|m| m.kind == MediaKind::Audio)
+        {
+            for attr in &media.attributes {
+                if attr.key == "rtpmap" {
+                    if let Some(value) = &attr.value {
+                        if let Ok((pt, codec, _, _)) = parse_rtpmap(value) {
+                            self.encoder.set_payload_type(pt, codec.clone());
+                            if let Ok(c) = self.processor_chain.codec.lock() {
+                                c.set_payload_type(pt, codec);
+                            }
+                        }
+                    }
+                }
+            }
+
+            for fmt in &media.formats {
+                if let Ok(pt) = fmt.parse::<u8>() {
+                    let codec = self
+                        .encoder
+                        .payload_type_map
+                        .borrow()
+                        .get(&pt)
+                        .cloned()
+                        .or_else(|| CodecType::try_from(pt).ok());
+
+                    if let Some(codec) = codec {
+                        if codec != CodecType::TelephoneEvent {
+                            info!(track_id=%self.track_id, "Negotiated primary audio PT {} ({:?})", pt, codec);
+                            self.payload_type
+                                .store(pt, std::sync::atomic::Ordering::SeqCst);
+                            break;
+                        }
                     }
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -423,8 +437,7 @@ impl Track for RtcTrack {
         let sdp = rustrtc::SessionDescription::parse(rustrtc::SdpType::Offer, &offer)?;
         pc.set_remote_description(sdp).await?;
 
-        // Extract negotiated payload types from OFFER
-        self.parse_sdp_payload_types(&offer);
+        self.parse_sdp_payload_types(rustrtc::SdpType::Offer, &offer)?;
 
         let answer = pc.create_answer()?;
         pc.set_local_description(answer.clone())?;
@@ -446,7 +459,7 @@ impl Track for RtcTrack {
             pc.set_remote_description(sdp_obj).await?;
 
             // Extract negotiated payload types from SDP string
-            self.parse_sdp_payload_types(answer);
+            self.parse_sdp_payload_types(rustrtc::SdpType::Answer, answer)?;
         }
         Ok(())
     }
@@ -586,5 +599,53 @@ impl RtcTrack {
                 _ => 111,
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::track::TrackConfig;
+
+    #[test]
+    fn test_parse_sdp_payload_types() {
+        let track_id = "test-track".to_string();
+        let cancel_token = CancellationToken::new();
+        let track = RtcTrack::new(
+            cancel_token,
+            track_id,
+            TrackConfig::default(),
+            RtcTrackConfig::default(),
+        );
+
+        // Case 1: Multiple audio codecs, telephone-event at the end. Primary should be PCMA (8)
+        let sdp1 = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 1234 RTP/AVP 8 0 101\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\n";
+        track
+            .parse_sdp_payload_types(rustrtc::SdpType::Offer, sdp1)
+            .expect("parse offer");
+        assert_eq!(track.get_payload_type(), 8);
+
+        // Case 2: telephone-event at the beginning, should skip it and pick PCMU (0)
+        let mut rtc_config = RtcTrackConfig::default();
+        rtc_config.preferred_codec = Some(CodecType::PCMU);
+        let track2 = RtcTrack::new(
+            CancellationToken::new(),
+            "test-track-2".to_string(),
+            TrackConfig::default(),
+            rtc_config,
+        );
+
+        let sdp2 = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 1234 RTP/AVP 101 0 8\r\na=rtpmap:101 telephone-event/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n";
+        track2
+            .parse_sdp_payload_types(rustrtc::SdpType::Offer, sdp2)
+            .expect("parse offer");
+        assert_eq!(track2.get_payload_type(), 0);
+
+        // Case 3: Opus with dynamic payload type 111
+        let sdp3 = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 1234 RTP/AVP 111 101\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:101 telephone-event/8000\r\n";
+        track
+            .parse_sdp_payload_types(rustrtc::SdpType::Offer, sdp3)
+            .expect("parse offer");
+        assert_eq!(track.get_payload_type(), 111);
     }
 }
