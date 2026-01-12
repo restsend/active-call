@@ -1211,9 +1211,7 @@ impl ActiveCall {
             .zip(self.app_state.config.rtp_end_port);
 
         if let Some(ref external_ip) = self.app_state.config.external_ip {
-            if let Ok(ip) = external_ip.parse() {
-                rtc_config.local_addr = Some(ip);
-            }
+            rtc_config.external_ip = Some(external_ip.clone());
         }
 
         let mut track = RtcTrack::new(
@@ -1469,9 +1467,7 @@ impl ActiveCall {
         rtc_config.ice_servers = self.app_state.config.ice_servers.clone();
 
         if let Some(ref external_ip) = self.app_state.config.external_ip {
-            if let Ok(ip) = external_ip.parse() {
-                rtc_config.local_addr = Some(ip);
-            }
+            rtc_config.external_ip = Some(external_ip.clone());
         }
 
         let mut webrtc_track = RtcTrack::new(
@@ -1676,9 +1672,7 @@ impl ActiveCall {
             rtc_config.mode = rustrtc::TransportMode::WebRtc;
             rtc_config.ice_servers = self.app_state.config.ice_servers.clone();
             if let Some(ref external_ip) = self.app_state.config.external_ip {
-                if let Ok(ip) = external_ip.parse() {
-                    rtc_config.local_addr = Some(ip);
-                }
+                rtc_config.external_ip = Some(external_ip.clone());
             }
 
             let webrtc_track = RtcTrack::new(

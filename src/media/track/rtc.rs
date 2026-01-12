@@ -23,7 +23,7 @@ use rustrtc::{
         track::SampleStreamTrack,
     },
 };
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -32,7 +32,7 @@ use tracing::{debug, info};
 pub struct RtcTrackConfig {
     pub mode: TransportMode,
     pub ice_servers: Option<Vec<IceServer>>,
-    pub local_addr: Option<IpAddr>,
+    pub external_ip: Option<String>,
     pub rtp_port_range: Option<(u16, u16)>,
     pub preferred_codec: Option<CodecType>,
     pub codecs: Vec<CodecType>,
@@ -44,7 +44,7 @@ impl Default for RtcTrackConfig {
         Self {
             mode: TransportMode::WebRtc, // Default WebRTC behavior
             ice_servers: None,
-            local_addr: None,
+            external_ip: None,
             rtp_port_range: None,
             preferred_codec: None,
             codecs: Vec::new(),
@@ -129,9 +129,14 @@ impl RtcTrack {
             config.ice_servers = ice_servers.clone();
         }
 
+        if let Some(external_ip) = &self.rtc_config.external_ip {
+            config.external_ip = Some(external_ip.clone());
+        }
+
         if !self.rtc_config.codecs.is_empty() {
             let mut caps = MediaCapabilities::default();
             caps.audio.clear();
+
             for codec in &self.rtc_config.codecs {
                 let cap = match codec {
                     CodecType::PCMU => AudioCapability::pcmu(),
