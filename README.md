@@ -54,6 +54,10 @@ Benchmarked on 60 seconds of 16kHz audio (Release mode):
 
 For detailed information on REST endpoints and WebSocket protocols, please refer to the [API Documentation](docs/api.md).
 
+## SDKs
+
+- **Go SDK**: [rustpbxgo](https://github.com/restsend/rustpbxgo) - Official Go client for building voice applications with `active-call`.
+
 ## Dialogue Features
 
 `active-call` provides a rich set of features for building natural and responsive voice agents:
