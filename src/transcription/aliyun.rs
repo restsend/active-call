@@ -442,7 +442,11 @@ impl AliyunAsrClient {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::spawn(send_loop);
+        crate::spawn(async move {
+            if let Err(e) = send_loop.await {
+                debug!("Aliyun ASR send_loop finished with error: {:?}", e);
+            }
+        });
 
         tokio::select! {
             result = recv_loop => result,
@@ -532,8 +536,9 @@ impl AliyunAsrClientBuilder {
         let token = self.token.unwrap_or_default();
         let event_sender = self.event_sender;
 
-        tokio::spawn(async move {
-            // Handle wait_for_answer if enabled
+        crate::spawn(async move {
+            let res = async move {
+                // Handle wait_for_answer if enabled
             if event_sender_rx.is_some() {
                 handle_wait_for_answer_with_audio_drop(event_sender_rx, &mut audio_rx, &token)
                     .await;
@@ -592,6 +597,10 @@ impl AliyunAsrClientBuilder {
                 }
             }
             Ok::<(), anyhow::Error>(())
+        }.await;
+        if let Err(e) = res {
+            debug!("Aliyun ASR task finished with error: {:?}", e);
+        }
         });
 
         Ok(client)

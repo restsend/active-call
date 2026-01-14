@@ -168,7 +168,7 @@ impl Track for MediaPassTrack {
         let ptime_ms = ptime.as_millis() as u32;
         let channels = self.config.channels;
         let mut processor_chain = self.processor_chain.clone();
-        tokio::spawn(async move {
+        crate::spawn(async move {
             let mut bytes_received = 0u64;
             let mut bytes_emitted = 0u64;
 

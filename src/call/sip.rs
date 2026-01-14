@@ -69,7 +69,7 @@ impl DialogStateReceiverGuard {
 impl Drop for DialogStateReceiverGuard {
     fn drop(&mut self) {
         if let Some(dialog) = self.take_dialog() {
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 if let Err(e) = dialog.hangup().await {
                     warn!(id=%dialog.id(), "error hanging up dialog on drop: {}", e);
                 }

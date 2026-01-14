@@ -344,11 +344,11 @@ async fn test_incoming_call_reject() -> Result<()> {
 
         let alice_uri = format!("sip:alice@{}", alice_local_addr.addr);
         let bob_uri = format!("sip:bob@{}", bob_local_addr.addr);
-        
+
         info!("Alice URI: {}, Bob URI: {}", alice_uri, bob_uri);
 
         let sdp = b"v=0\r\no=bob 123456 123456 IN IP4 127.0.0.1\r\ns=Call\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 49170 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
-        
+
         let invite_option = InviteOption {
             caller: bob_uri.clone().try_into()?,
             callee: alice_uri.try_into()?,
@@ -361,9 +361,8 @@ async fn test_incoming_call_reject() -> Result<()> {
         let (state_sender, _state_receiver) = mpsc::unbounded_channel();
         let bob_ua_invite = bob_ua_arc.invitation.clone();
 
-        let invite_handle = tokio::spawn(async move {
-            bob_ua_invite.invite(invite_option, state_sender).await
-        });
+        let invite_handle =
+            tokio::spawn(async move { bob_ua_invite.invite(invite_option, state_sender).await });
 
         let mut webhook_received = false;
         let mut alice_dialog_id_received = None;
@@ -386,9 +385,12 @@ async fn test_incoming_call_reject() -> Result<()> {
         if let Some(dialog_id_str) = alice_dialog_id_received {
             if let Some(pending_call) = alice_ua_arc.invitation.get_pending_call(&dialog_id_str) {
                 info!("Alice REJECTING call with dialog_id: {}", dialog_id_str);
-                pending_call.dialog.reject(Some(rsip::StatusCode::Decline), None).ok();
+                pending_call
+                    .dialog
+                    .reject(Some(rsip::StatusCode::Decline), None)
+                    .ok();
             } else {
-                 return Err(anyhow::anyhow!("No pending call found for Alice"));
+                return Err(anyhow::anyhow!("No pending call found for Alice"));
             }
         }
 
@@ -397,7 +399,9 @@ async fn test_incoming_call_reject() -> Result<()> {
                 info!("Bob's call failed as expected: {:?}", e);
             }
             Ok(Ok(_)) => {
-                return Err(anyhow::anyhow!("Bob call succeeded but should have been rejected"));
+                return Err(anyhow::anyhow!(
+                    "Bob call succeeded but should have been rejected"
+                ));
             }
             Err(e) => {
                 return Err(e.into());
@@ -426,7 +430,7 @@ async fn test_outgoing_call_remote_reject() -> Result<()> {
     // 2. Setup Bob (No Config -> No Handler)
     let bob_ua_arc = create_simple_useragent("127.0.0.1".to_string()).await?;
     let bob_token = bob_ua_arc.token.clone();
-    
+
     let alice_ua_run = alice_ua_arc.clone();
     let bob_ua_run = bob_ua_arc.clone();
 
@@ -438,7 +442,7 @@ async fn test_outgoing_call_remote_reject() -> Result<()> {
 
         let alice_uri = format!("sip:alice@{}", alice_local_addr.addr);
         let bob_uri = format!("sip:bob@{}", bob_local_addr.addr);
-        
+
         let sdp = b"v=0\r\no=alice 111 111 IN IP4 127.0.0.1\r\ns=Call\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 50000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
 
         let invite_option = InviteOption {
@@ -454,16 +458,16 @@ async fn test_outgoing_call_remote_reject() -> Result<()> {
         let result = alice_ua_arc.invitation.invite(invite_option, tx).await;
 
         match result {
-            Ok(_) => {
-                Err(anyhow::anyhow!("Outgoing call should have been rejected by Bob who has no handler"))
-            }
+            Ok(_) => Err(anyhow::anyhow!(
+                "Outgoing call should have been rejected by Bob who has no handler"
+            )),
             Err(e) => {
                 info!("Outgoing call rejected as expected: {:?}", e);
                 Ok(())
             }
         }
     };
-    
+
     let test_result = tokio::select! {
         _ = alice_ua_run.serve() => Err(anyhow::anyhow!("Alice stopped unexpectedly")),
         _ = bob_ua_run.serve() => Err(anyhow::anyhow!("Bob stopped unexpectedly")),

@@ -23,7 +23,7 @@ impl InactivityProcessor {
         let last_received_clone = last_received.clone();
         let track_id_clone = track_id.clone();
 
-        tokio::spawn(async move {
+        crate::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 tokio::select! {

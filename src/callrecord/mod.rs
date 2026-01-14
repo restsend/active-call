@@ -4,7 +4,7 @@ use crate::{
     config::{CallRecordConfig, S3Vendor},
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use futures::stream::{FuturesUnordered, StreamExt};
 use object_store::PutPayload;
 use object_store::{
@@ -185,7 +185,10 @@ impl ToString for CallRecordHangupReason {
 pub fn default_cdr_file_name(record: &CallRecord) -> String {
     format!(
         "{}_{}.json",
-        record.start_time.format("%Y%m%d-%H%M%S"),
+        record
+            .start_time
+            .with_timezone(&Local)
+            .format("%Y%m%d-%H%M%S"),
         record.call_id
     )
 }
@@ -232,7 +235,7 @@ impl CallRecordFormatter for DefaultCallRecordFormatter {
             format!(
                 "{}/{}/{}",
                 trimmed_root,
-                record.start_time.format("%Y%m%d"),
+                record.start_time.with_timezone(&Local).format("%Y%m%d"),
                 file_name
             )
         }
@@ -242,7 +245,7 @@ impl CallRecordFormatter for DefaultCallRecordFormatter {
         format!(
             "{}/{}/{}.jsonl",
             self.root.trim_end_matches('/'),
-            record.start_time.format("%Y%m%d"),
+            record.start_time.with_timezone(&Local).format("%Y%m%d"),
             record.call_id
         )
     }
@@ -257,7 +260,7 @@ impl CallRecordFormatter for DefaultCallRecordFormatter {
         format!(
             "{}/{}/{}_{}_{}",
             self.root.trim_end_matches('/'),
-            record.start_time.format("%Y%m%d"),
+            record.start_time.with_timezone(&Local).format("%Y%m%d"),
             record.call_id,
             media.track_id,
             file_name

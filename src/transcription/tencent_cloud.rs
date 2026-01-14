@@ -149,63 +149,69 @@ impl TencentCloudAsrClientBuilder {
 
         info!(track_id, "Starting TencentCloud ASR client");
 
-        tokio::spawn(async move {
-            // Handle wait_for_answer if enabled
-            if event_sender_rx.is_some() {
-                handle_wait_for_answer_with_audio_drop(event_sender_rx, &mut audio_rx, &token)
-                    .await;
+        crate::spawn(async move {
+            let res = async move {
+                // Handle wait_for_answer if enabled
+                if event_sender_rx.is_some() {
+                    handle_wait_for_answer_with_audio_drop(event_sender_rx, &mut audio_rx, &token)
+                        .await;
 
-                // Check if cancelled during wait
-                if token.is_cancelled() {
-                    debug!("Cancelled during wait for answer");
-                    return Ok::<(), anyhow::Error>(());
+                    // Check if cancelled during wait
+                    if token.is_cancelled() {
+                        debug!("Cancelled during wait for answer");
+                        return Ok::<(), anyhow::Error>(());
+                    }
                 }
-            }
 
-            let ws_stream = match inner.connect_websocket(track_id.as_str()).await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    warn!(
-                        track_id,
-                        "Failed to connect to TencentCloud ASR WebSocket: {}", e
-                    );
-                    let _ = event_sender.send(SessionEvent::Error {
-                        timestamp: crate::media::get_timestamp(),
-                        track_id: track_id.clone(),
-                        sender: "TencentCloudAsrClient".to_string(),
-                        error: format!("Failed to connect to TencentCloud ASR WebSocket: {}", e),
-                        code: Some(500),
-                    });
-                    return Err(e);
-                }
-            };
-
-            match TencentCloudAsrClient::handle_websocket_message(
-                track_id.clone(),
-                ws_stream,
-                audio_rx,
-                event_sender.clone(),
-                token,
-            )
-            .await
-            {
-                Ok(_) => {
-                    debug!(track_id, "WebSocket message handling completed");
-                }
-                Err(e) => {
-                    info!(track_id, "Error in handle_websocket_message: {}", e);
-                    event_sender
-                        .send(SessionEvent::Error {
+                let ws_stream = match inner.connect_websocket(track_id.as_str()).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        warn!(
                             track_id,
+                            "Failed to connect to TencentCloud ASR WebSocket: {}", e
+                        );
+                        let _ = event_sender.send(SessionEvent::Error {
                             timestamp: crate::media::get_timestamp(),
-                            sender: "tencent_cloud_asr".to_string(),
-                            error: e.to_string(),
-                            code: None,
-                        })
-                        .ok();
+                            track_id: track_id.clone(),
+                            sender: "TencentCloudAsrClient".to_string(),
+                            error: format!("Failed to connect to TencentCloud ASR WebSocket: {}", e),
+                            code: Some(500),
+                        });
+                        return Err(e);
+                    }
+                };
+
+                match TencentCloudAsrClient::handle_websocket_message(
+                    track_id.clone(),
+                    ws_stream,
+                    audio_rx,
+                    event_sender.clone(),
+                    token,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        debug!(track_id, "WebSocket message handling completed");
+                    }
+                    Err(e) => {
+                        info!(track_id, "Error in handle_websocket_message: {}", e);
+                        event_sender
+                            .send(SessionEvent::Error {
+                                track_id,
+                                timestamp: crate::media::get_timestamp(),
+                                sender: "tencent_cloud_asr".to_string(),
+                                error: e.to_string(),
+                                code: None,
+                            })
+                            .ok();
+                    }
                 }
+                Ok::<(), anyhow::Error>(())
             }
-            Ok::<(), anyhow::Error>(())
+            .await;
+            if let Err(e) = res {
+                debug!("TencentCloud ASR task finished with error: {:?}", e);
+            }
         });
 
         Ok(client)

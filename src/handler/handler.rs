@@ -124,7 +124,7 @@ pub async fn call_handler(
                 match playbook_result {
                     Ok(playbook) => match PlaybookRunner::new(playbook, active_call.clone()) {
                         Ok(runner) => {
-                            tokio::spawn(async move {
+                            crate::spawn(async move {
                                 runner.run().await;
                             });
                             let display_name = if name_or_content.trim().starts_with("---") {

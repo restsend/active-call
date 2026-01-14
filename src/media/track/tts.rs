@@ -595,7 +595,7 @@ impl TtsTask {
                     .map(|entry| entry.finished = true);
             }
             Err(e) => {
-                warn!(
+                error!(
                     session_id = %self.session_id,
                     track_id = %self.track_id,
                     play_id = ?self.play_id,
@@ -603,6 +603,16 @@ impl TtsTask {
                     error = %e,
                     "tts synthesis event error"
                 );
+                // emit to client
+                self.event_sender
+                    .send(SessionEvent::Error {
+                        track_id: self.track_id.clone(),
+                        timestamp: crate::media::get_timestamp(),
+                        sender: "tts".to_string(),
+                        error: e.to_string(),
+                        code: Some(500),
+                    })
+                    .ok();
                 // set finished to true if cmd_seq failed
                 self.get_emit_entry_mut(assume_seq)
                     .map(|entry| entry.finished = true);
@@ -824,7 +834,11 @@ impl Track for TtsTrack {
             streaming = self.streaming,
             "spawning tts task"
         );
-        tokio::spawn(async move { task.run().await });
+        crate::spawn(async move {
+            if let Err(e) = task.run().await {
+                tracing::error!("tts task error: {:?}", e);
+            }
+        });
         Ok(())
     }
 

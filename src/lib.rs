@@ -207,3 +207,23 @@ impl RealtimeOption {
         }
     }
 }
+
+pub type Spawner = fn(
+    std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+) -> tokio::task::JoinHandle<()>;
+static EXTERNAL_SPAWNER: std::sync::OnceLock<Spawner> = std::sync::OnceLock::new();
+
+pub fn set_spawner(spawner: Spawner) -> Result<(), Spawner> {
+    EXTERNAL_SPAWNER.set(spawner)
+}
+
+pub fn spawn<F>(future: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    if let Some(spawner) = EXTERNAL_SPAWNER.get() {
+        spawner(Box::pin(future))
+    } else {
+        tokio::spawn(future)
+    }
+}

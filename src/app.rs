@@ -182,7 +182,7 @@ impl AppStateInner {
             if tx.original.to_header()?.tag()?.as_ref().is_some() {
                 match dialog_layer.match_dialog(&tx.original) {
                     Some(mut d) => {
-                        tokio::spawn(async move {
+                        crate::spawn(async move {
                             match d.handle(&mut tx).await {
                                 Ok(_) => (),
                                 Err(e) => {
@@ -299,7 +299,7 @@ impl AppStateInner {
 
                     let token_ref = token.clone();
                     let guard_ref = guard.clone();
-                    tokio::spawn(async move {
+                    crate::spawn(async move {
                         select! {
                             _ = token_ref.cancelled() => {}
                             _ = tokio::time::sleep(accept_timeout) => {}
@@ -310,7 +310,7 @@ impl AppStateInner {
                     let mut dialog_ref = dialog.clone();
                     let token_ref = token.clone();
                     let routing_state = self.routing_state.clone();
-                    tokio::spawn(async move {
+                    crate::spawn(async move {
                         let invite_loop = async {
                             match invitation_handler
                                 .on_invite(
@@ -439,7 +439,7 @@ impl AppStateInner {
             .insert(user.clone(), handle.clone());
         let alive_users = self.alive_users.clone();
 
-        tokio::spawn(async move {
+        crate::spawn(async move {
             *handle.inner.start_time.lock().await = std::time::Instant::now();
 
             select! {
@@ -627,7 +627,7 @@ impl AppStateBuilder {
 
             let mut callrecord_manager = builder.build();
             let sender = callrecord_manager.sender.clone();
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 callrecord_manager.serve().await;
             });
             Some(sender)

@@ -56,7 +56,7 @@ impl Drop for PendingDialogGuard {
         if let Some(dialog) = self.take_dialog() {
             info!(%self.id, "removing pending dialog on drop");
 
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 dialog.hangup().await.ok();
             });
         }

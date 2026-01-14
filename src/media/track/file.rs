@@ -16,7 +16,7 @@ use std::time::Instant;
 use tokio::select;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 trait AudioReader: Send {
@@ -406,36 +406,80 @@ impl Track for FileTrack {
         let ssrc = self.ssrc;
         // Spawn async task to handle file streaming
         let play_id = self.play_id.clone();
-        tokio::spawn(async move {
-            // Determine file extension
-            let extension = if path.starts_with("http://") || path.starts_with("https://") {
-                path.parse::<Url>()?
-                    .path()
-                    .split(".")
-                    .last()
-                    .unwrap_or("")
-                    .to_string()
-            } else {
-                path.split('.').last().unwrap_or("").to_string()
-            };
+        crate::spawn(async move {
+            let res = async move {
+                // Determine file extension
+                let extension = if path.starts_with("http://") || path.starts_with("https://") {
+                    path.parse::<Url>()?
+                        .path()
+                        .split(".")
+                        .last()
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    path.split('.').last().unwrap_or("").to_string()
+                };
 
-            let cache_key = if path.starts_with("http://") || path.starts_with("https://") {
-                Some(cache::generate_cache_key(&path, 0, None, None))
-            } else {
-                None
-            };
+                let cache_key = if path.starts_with("http://") || path.starts_with("https://") {
+                    Some(cache::generate_cache_key(&path, 0, None, None))
+                } else {
+                    None
+                };
 
-            // Open file or download from URL
-            let file = if path.starts_with("http://") || path.starts_with("https://") {
-                crate::media::loader::download_from_url(&path, use_cache).await
-            } else {
-                File::open(&path).map_err(|e| anyhow::anyhow!("filetrack: {}", e))
-            };
+                // Open file or download from URL
+                let file = if path.starts_with("http://") || path.starts_with("https://") {
+                    crate::media::loader::download_from_url(&path, use_cache).await
+                } else {
+                    File::open(&path).map_err(|e| anyhow::anyhow!("filetrack: {}", e))
+                };
 
-            let file = match file {
-                Ok(file) => file,
-                Err(e) => {
-                    warn!("filetrack: Error opening file: {}", e);
+                let file = match file {
+                    Ok(file) => file,
+                    Err(e) => {
+                        warn!("filetrack: Error opening file: {}", e);
+                        if let Some(key) = cache_key {
+                            if use_cache {
+                                let _ = cache::delete_from_cache(&key).await;
+                            }
+                        }
+                        event_sender
+                            .send(SessionEvent::Error {
+                                track_id: id.clone(),
+                                timestamp: crate::media::get_timestamp(),
+                                sender: format!("filetrack: {}", path),
+                                error: e.to_string(),
+                                code: None,
+                            })
+                            .ok();
+                        event_sender
+                            .send(SessionEvent::TrackEnd {
+                                track_id: id,
+                                timestamp: crate::media::get_timestamp(),
+                                duration: crate::media::get_timestamp() - start_time,
+                                ssrc,
+                                play_id: play_id.clone(),
+                            })
+                            .ok();
+                        return Err(e);
+                    }
+                };
+
+                // Stream the audio file
+                let stream_result = stream_audio_file(
+                    processor_chain,
+                    extension.as_str(),
+                    file,
+                    &id,
+                    sample_rate,
+                    packet_duration_ms,
+                    token,
+                    packet_sender,
+                )
+                .await;
+
+                // Handle any streaming errors
+                if let Err(e) = stream_result {
+                    warn!("filetrack: Error streaming audio: {}, {}", path, e);
                     if let Some(key) = cache_key {
                         if use_cache {
                             let _ = cache::delete_from_cache(&key).await;
@@ -450,62 +494,24 @@ impl Track for FileTrack {
                             code: None,
                         })
                         .ok();
-                    event_sender
-                        .send(SessionEvent::TrackEnd {
-                            track_id: id,
-                            timestamp: crate::media::get_timestamp(),
-                            duration: crate::media::get_timestamp() - start_time,
-                            ssrc,
-                            play_id: play_id.clone(),
-                        })
-                        .ok();
-                    return Err(e);
                 }
-            };
 
-            // Stream the audio file
-            let stream_result = stream_audio_file(
-                processor_chain,
-                extension.as_str(),
-                file,
-                &id,
-                sample_rate,
-                packet_duration_ms,
-                token,
-                packet_sender,
-            )
-            .await;
-
-            // Handle any streaming errors
-            if let Err(e) = stream_result {
-                warn!("filetrack: Error streaming audio: {}, {}", path, e);
-                if let Some(key) = cache_key {
-                    if use_cache {
-                        let _ = cache::delete_from_cache(&key).await;
-                    }
-                }
+                // Send track end event
                 event_sender
-                    .send(SessionEvent::Error {
-                        track_id: id.clone(),
+                    .send(SessionEvent::TrackEnd {
+                        track_id: id,
                         timestamp: crate::media::get_timestamp(),
-                        sender: format!("filetrack: {}", path),
-                        error: e.to_string(),
-                        code: None,
+                        duration: crate::media::get_timestamp() - start_time,
+                        ssrc,
+                        play_id,
                     })
                     .ok();
+                Ok::<(), anyhow::Error>(())
             }
-
-            // Send track end event
-            event_sender
-                .send(SessionEvent::TrackEnd {
-                    track_id: id,
-                    timestamp: crate::media::get_timestamp(),
-                    duration: crate::media::get_timestamp() - start_time,
-                    ssrc,
-                    play_id,
-                })
-                .ok();
-            Ok::<(), anyhow::Error>(())
+            .await;
+            if let Err(e) = res {
+                debug!("filetrack: streaming task finished with error: {:?}", e);
+            }
         });
         Ok(())
     }

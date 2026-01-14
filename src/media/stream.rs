@@ -281,7 +281,7 @@ impl MediaStream {
                 "start recorder",
             );
 
-            let recorder_handle = tokio::spawn(async move {
+            let recorder_handle = crate::spawn(async move {
                 let recorder_file = recorder_option.recorder_file.clone();
                 let recorder =
                     Recorder::new(cancel_token, session_id_clone.clone(), recorder_option);

@@ -103,7 +103,7 @@ impl Track for WebsocketTrack {
         let start_time = crate::media::get_timestamp();
         let ssrc = self.ssrc;
         let mut processor_chain = self.processor_chain.clone();
-        tokio::spawn(async move {
+        crate::spawn(async move {
             let track_id_clone = track_id.clone();
             let audio_from_ws_loop = async move {
                 let mut sequence_number = 0;

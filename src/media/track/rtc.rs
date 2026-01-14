@@ -218,7 +218,7 @@ impl RtcTrack {
         let is_webrtc = self.rtc_config.mode != TransportMode::Rtp;
 
         // 1. Event Loop
-        tokio::spawn(async move {
+        crate::spawn(async move {
             info!(track_id=%track_id_log, "RtcTrack event loop started");
             let mut events = futures::stream::unfold(pc_clone, |pc| async move {
                 pc.recv().await.map(|ev| (ev, pc))
@@ -253,7 +253,7 @@ impl RtcTrack {
             let mut state_rx = pc_state.subscribe_peer_state();
             let track_id_state = track_id.clone();
 
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 while state_rx.changed().await.is_ok() {
                     let s = *state_rx.borrow();
                     debug!(track_id=%track_id_state, "peer connection state changed: {:?}", s);
@@ -292,7 +292,7 @@ impl RtcTrack {
         let packet_sender_proc = packet_sender_arc.clone();
         let mut processor_chain_proc = processor_chain.clone();
         let cancel_token_proc = cancel_token.clone();
-        tokio::spawn(async move {
+        crate::spawn(async move {
             info!(track_id=%track_id_proc, "RtcTrack processing worker started");
             while let Some(frame) = rx.recv().await {
                 if cancel_token_proc.is_cancelled() {
@@ -311,7 +311,7 @@ impl RtcTrack {
         });
 
         // Receiving Worker
-        tokio::spawn(async move {
+        crate::spawn(async move {
             let mut samples =
                 futures::stream::unfold(
                     track,
@@ -479,7 +479,7 @@ impl Track for RtcTrack {
 
         if self.rtc_config.mode != TransportMode::Rtp {
             let start_time = crate::media::get_timestamp();
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 token_clone.cancelled().await;
                 let _ = event_sender_clone.send(SessionEvent::TrackEnd {
                     track_id,

@@ -1663,7 +1663,7 @@ impl ActiveCall {
         let mut client_dialog_handler =
             DialogStateReceiverGuard::new(self.invitation.dialog_layer.clone(), dlg_state_receiver);
 
-        tokio::spawn(async move {
+        crate::spawn(async move {
             client_dialog_handler.process_dialog(states).await;
         });
 
@@ -1809,7 +1809,7 @@ impl ActiveCall {
         let mut client_dialog_handler =
             DialogStateReceiverGuard::new(self.invitation.dialog_layer.clone(), state_receiver);
 
-        tokio::spawn(async move {
+        crate::spawn(async move {
             client_dialog_handler.process_dialog(states).await;
         });
         Ok(())

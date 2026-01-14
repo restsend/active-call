@@ -135,7 +135,7 @@ impl PlaybookRunner {
         if let Some(posthook) = self.config.posthook.clone() {
             let mut handler = self.handler;
             let call = self.call.clone();
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 info!("Executing posthook for session {}", call.session_id);
 
                 let summary = if let Some(summary_type) = &posthook.summary {

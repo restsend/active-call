@@ -30,7 +30,7 @@ impl RealtimeProcessor {
     ) -> Result<Self> {
         let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
 
-        tokio::spawn(async move {
+        crate::spawn(async move {
             if let Err(e) = run_realtime_loop(
                 track_id,
                 cancel_token,
