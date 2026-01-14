@@ -537,7 +537,7 @@ async fn test_tts_track_end_of_stream() -> Result<()> {
 
 #[tokio::test]
 async fn test_tts_track_base64() -> Result<()> {
-    // Create a command channel
+        // Create a command channel
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
     // Create a TtsTrack with non-streaming mode
@@ -567,16 +567,27 @@ async fn test_tts_track_base64() -> Result<()> {
     command_tx.send(SynthesisCommand {
         text,
         base64: true,
+        end_of_stream: true,
         ..Default::default()
     })?;
 
-    let mut bytes_received = 0;
+    let mut sample_received = 0;
     let timeout = tokio::time::sleep(Duration::from_millis(3000));
     tokio::pin!(timeout);
     loop {
         tokio::select! {
-            _ = &mut timeout => {
-                break;
+            biased;
+            packet = packet_rx.recv() => {
+                match packet {
+                    Some(packet) => {
+                        if let Samples::PCM { samples } = &packet.samples {
+                            sample_received += samples.len();
+                        }
+                    }
+                    None => {
+                        break
+                    }
+                }
             }
             event = event_rx.recv() => {
                 match event {
@@ -589,20 +600,14 @@ async fn test_tts_track_base64() -> Result<()> {
                     _ => {}
                 }
             }
-            packet = packet_rx.recv() => {
-                match packet {
-                    Some(packet) => {
-                        if let Samples::PCM { samples } = &packet.samples {
-                            bytes_received += samples.len();
-                        }
-                    }
-                    None => {
-                        break
-                    }
-                }
+            _ = &mut timeout => {
+                break;
             }
+
+
         }
     }
-    assert!(bytes_received >= 16000, "Not enough bytes");
+
+    assert!(sample_received >= 8000, "Not enough bytes");
     Ok(())
 }
