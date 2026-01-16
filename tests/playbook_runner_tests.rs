@@ -6,7 +6,7 @@ use active_call::media::engine::StreamEngine;
 use active_call::media::track::TrackConfig;
 use active_call::playbook::{
     ChatMessage, LlmConfig, PlaybookConfig, PlaybookRunner,
-    handler::{LlmHandler, LlmProvider, RagRetriever},
+    handler::{LlmHandler, LlmProvider, LlmStreamEvent, RagRetriever},
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -28,10 +28,10 @@ impl LlmProvider for MockLlmProvider {
         &self,
         _config: &LlmConfig,
         _history: &[ChatMessage],
-    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send>>> {
         let response = self.response.clone();
         let s = async_stream::stream! {
-            yield Ok(response);
+            yield Ok(LlmStreamEvent::Content(response));
         };
         Ok(Box::pin(s))
     }
@@ -102,6 +102,7 @@ async fn test_playbook_run_flow() -> Result<()> {
         provider,
         Arc::new(NoopRag),
         active_call::playbook::InterruptionConfig::default(),
+        None,
         HashMap::new(),
         None,
         None,
@@ -224,6 +225,7 @@ async fn test_playbook_hangup_flow() -> Result<()> {
         provider,
         Arc::new(NoopRag),
         active_call::playbook::InterruptionConfig::default(),
+        None,
         HashMap::new(),
         None,
         None,
@@ -305,6 +307,7 @@ async fn test_playbook_accept_flow() -> Result<()> {
         provider,
         Arc::new(NoopRag),
         active_call::playbook::InterruptionConfig::default(),
+        None,
         HashMap::new(),
         None,
         None,
@@ -368,6 +371,7 @@ async fn test_playbook_reject_flow() -> Result<()> {
         provider,
         Arc::new(NoopRag),
         active_call::playbook::InterruptionConfig::default(),
+        None,
         HashMap::new(),
         None,
         None,

@@ -108,10 +108,28 @@ impl CallOption {
         if let Some(callee) = &self.callee {
             invite_option.callee = callee.clone().try_into()?;
         }
-        if let Some(caller) = &self.caller {
-            invite_option.caller = caller.clone().try_into()?;
-            invite_option.contact = invite_option.caller.clone();
-        }
+        let caller_uri = if let Some(caller) = &self.caller {
+            // Ensure caller URI has proper sip: scheme
+            if caller.starts_with("sip:") || caller.starts_with("sips:") {
+                caller.clone()
+            } else {
+                format!("sip:{}", caller)
+            }
+        } else if let Some(username) = self.sip.as_ref().and_then(|sip| sip.username.as_ref()) {
+            // If caller is not specified but we have SIP credentials, use username as caller
+            // If realm is available, use it, otherwise use local IP
+            let domain = self
+                .sip
+                .as_ref()
+                .and_then(|sip| sip.realm.as_ref())
+                .map(|s| s.as_str())
+                .unwrap_or("127.0.0.1");
+            format!("sip:{}@{}", username, domain)
+        } else {
+            // Default to a valid SIP URI if nothing is specified
+            "sip:active-call@127.0.0.1".to_string()
+        };
+        invite_option.caller = caller_uri.try_into()?;
 
         if let Some(sip) = &self.sip {
             invite_option.credential = Some(Credential {

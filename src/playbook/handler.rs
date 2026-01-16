@@ -47,6 +47,12 @@ use super::dialogue::DialogueHandler;
 
 const MAX_RAG_ATTEMPTS: usize = 3;
 
+#[derive(Debug, Clone)]
+pub enum LlmStreamEvent {
+    Content(String),
+    Reasoning(String),
+}
+
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn call(&self, config: &LlmConfig, history: &[ChatMessage]) -> Result<String>;
@@ -54,7 +60,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         config: &LlmConfig,
         history: &[ChatMessage],
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>>;
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LlmStreamEvent>> + Send>>>;
 }
 
 pub struct RealtimeResponse {
@@ -132,7 +138,7 @@ impl LlmProvider for DefaultLlmProvider {
         &self,
         config: &LlmConfig,
         history: &[ChatMessage],
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LlmStreamEvent>> + Send>>> {
         let mut url = config
             .base_url
             .clone()
@@ -182,8 +188,13 @@ impl LlmProvider for DefaultLlmProvider {
                                     break;
                                 }
                                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                                    if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
-                                        yield Ok(content.to_string());
+                                    if let Some(delta) = json["choices"][0].get("delta") {
+                                         if let Some(thinking) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+                                             yield Ok(LlmStreamEvent::Reasoning(thinking.to_string()));
+                                         }
+                                         if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                                             yield Ok(LlmStreamEvent::Content(content.to_string()));
+                                         }
                                     }
                                 }
                             }
@@ -252,11 +263,15 @@ pub enum ToolInvocation {
 pub struct LlmHandler {
     config: LlmConfig,
     interruption_config: super::InterruptionConfig,
+    global_follow_up_config: Option<super::FollowUpConfig>,
     dtmf_config: Option<HashMap<String, super::DtmfAction>>,
     history: Vec<ChatMessage>,
     provider: Arc<dyn LlmProvider>,
     rag_retriever: Arc<dyn RagRetriever>,
     is_speaking: bool,
+    is_hanging_up: bool,
+    consecutive_follow_ups: u32,
+    last_interaction_at: std::time::Instant,
     event_sender: Option<crate::event::EventSender>,
     last_asr_final_at: Option<std::time::Instant>,
     last_tts_start_at: Option<std::time::Instant>,
@@ -269,6 +284,7 @@ impl LlmHandler {
     pub fn new(
         config: LlmConfig,
         interruption: super::InterruptionConfig,
+        global_follow_up_config: Option<super::FollowUpConfig>,
         scenes: HashMap<String, super::Scene>,
         dtmf: Option<HashMap<String, super::DtmfAction>>,
         initial_scene_id: Option<String>,
@@ -278,6 +294,7 @@ impl LlmHandler {
             Arc::new(DefaultLlmProvider::new()),
             Arc::new(NoopRagRetriever),
             interruption,
+            global_follow_up_config,
             scenes,
             dtmf,
             initial_scene_id,
@@ -289,6 +306,7 @@ impl LlmHandler {
         provider: Arc<dyn LlmProvider>,
         rag_retriever: Arc<dyn RagRetriever>,
         interruption: super::InterruptionConfig,
+        global_follow_up_config: Option<super::FollowUpConfig>,
         scenes: HashMap<String, super::Scene>,
         dtmf: Option<HashMap<String, super::DtmfAction>>,
         initial_scene_id: Option<String>,
@@ -305,11 +323,15 @@ impl LlmHandler {
         Self {
             config,
             interruption_config: interruption,
+            global_follow_up_config,
             dtmf_config: dtmf,
             history,
             provider,
             rag_retriever,
             is_speaking: false,
+            is_hanging_up: false,
+            consecutive_follow_ups: 0,
+            last_interaction_at: std::time::Instant::now(),
             event_sender: None,
             last_asr_final_at: None,
             last_tts_start_at: None,
@@ -323,11 +345,11 @@ impl LlmHandler {
         format!(
             "{}\n\n\
             Tool usage instructions:\n\
-            - To hang up the call, use: <hangup/>\n\
-            - To transfer the call, use: <refer to=\"sip:xxxx\"/>\n\
-            - To play an audio file, use: <play file=\"path/to/file.wav\"/>\n\
-            - To switch to another scene, use: <goto scene=\"scene_id\"/>\n\
-            Use these XML-like tags instead of JSON. Efficiency is key. \
+            - To hang up the call, output: <hangup/>\n\
+            - To transfer the call, output: <refer to=\"sip:xxxx\"/>\n\
+            - To play an audio file, output: <play file=\"path/to/file.wav\"/>\n\
+            - To switch to another scene, output: <goto scene=\"scene_id\"/>\n\
+            Please use these XML tags for action triggers. They are optimized for streaming playback. \
             Output your response in short sentences. Each sentence will be played as soon as it is finished.",
             prompt
         )
@@ -497,7 +519,7 @@ impl LlmHandler {
             play_id: Some(play_id),
             auto_hangup,
             streaming: None,
-            end_of_stream: None,
+            end_of_stream: Some(true),
             option: None,
             wait_input_timeout: Some(timeout),
             base64: None,
@@ -523,6 +545,7 @@ impl LlmHandler {
             .await?;
 
         let mut full_content = String::new();
+        let mut full_reasoning = String::new();
         let mut buffer = String::new();
         let mut commands = Vec::new();
         let mut is_json_mode = false;
@@ -530,7 +553,7 @@ impl LlmHandler {
         let mut first_token_time = None;
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = match chunk_result {
+            let event = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("LLM stream error: {}", e);
@@ -538,30 +561,38 @@ impl LlmHandler {
                 }
             };
 
-            if first_token_time.is_none() && !chunk.trim().is_empty() {
-                first_token_time = Some(crate::media::get_timestamp());
-            }
-
-            full_content.push_str(&chunk);
-            buffer.push_str(&chunk);
-
-            if !checked_json_mode {
-                let trimmed = full_content.trim();
-                if !trimmed.is_empty() {
-                    if trimmed.starts_with('{') || trimmed.starts_with('`') {
-                        is_json_mode = true;
-                    }
-                    checked_json_mode = true;
+            match event {
+                LlmStreamEvent::Reasoning(text) => {
+                    full_reasoning.push_str(&text);
                 }
-            }
+                LlmStreamEvent::Content(chunk) => {
+                    if first_token_time.is_none() && !chunk.trim().is_empty() {
+                        first_token_time = Some(crate::media::get_timestamp());
+                    }
 
-            if checked_json_mode && !is_json_mode {
-                let extracted = self.extract_streaming_commands(&mut buffer, &play_id, false);
-                for cmd in extracted {
-                    if let Some(call) = &self.call {
-                        let _ = call.enqueue_command(cmd).await;
-                    } else {
-                        commands.push(cmd);
+                    full_content.push_str(&chunk);
+                    buffer.push_str(&chunk);
+
+                    if !checked_json_mode {
+                        let trimmed = full_content.trim();
+                        if !trimmed.is_empty() {
+                            if trimmed.starts_with('{') || trimmed.starts_with('`') {
+                                is_json_mode = true;
+                            }
+                            checked_json_mode = true;
+                        }
+                    }
+
+                    if checked_json_mode && !is_json_mode {
+                        let extracted =
+                            self.extract_streaming_commands(&mut buffer, &play_id, false);
+                        for cmd in extracted {
+                            if let Some(call) = &self.call {
+                                let _ = call.enqueue_command(cmd).await;
+                            } else {
+                                commands.push(cmd);
+                            }
+                        }
                     }
                 }
             }
@@ -573,6 +604,7 @@ impl LlmHandler {
             "llm_response",
             json!({
                 "response": full_content,
+                "reasoning": full_reasoning,
                 "is_json_mode": is_json_mode,
                 "duration": end_time - start_time,
                 "ttfb": first_token_time.map(|t| t - start_time).unwrap_or(0),
@@ -645,16 +677,30 @@ impl LlmHandler {
                         // Hangup
                         let prefix = buffer[..pos].to_string();
                         if !prefix.trim().is_empty() {
-                            commands.push(self.create_tts_command_with_id(
+                            let mut cmd = self.create_tts_command_with_id(
                                 prefix,
                                 play_id.to_string(),
-                                None,
-                            ));
+                                Some(true),
+                            );
+                            if let Command::Tts { end_of_stream, .. } = &mut cmd {
+                                *end_of_stream = Some(true);
+                            }
+                            // Mark as hanging up to prevent interruption
+                            self.is_hanging_up = true;
+                            commands.push(cmd);
+                        } else {
+                            // Send an empty TTS command with auto_hangup=true to close the stream and trigger hangup
+                            let mut cmd = self.create_tts_command_with_id(
+                                "".to_string(),
+                                play_id.to_string(),
+                                Some(true),
+                            );
+                            if let Command::Tts { end_of_stream, .. } = &mut cmd {
+                                *end_of_stream = Some(true);
+                            }
+                            self.is_hanging_up = true;
+                            commands.push(cmd);
                         }
-                        commands.push(Command::Hangup {
-                            reason: None,
-                            initiator: None,
-                        });
                         buffer.drain(..RE_HANGUP.find(buffer).unwrap().end());
                         // Stop after hangup
                         return commands;
@@ -763,6 +809,24 @@ impl LlmHandler {
                 ));
             }
             buffer.clear();
+
+            if let Some(last) = commands.last_mut() {
+                if let Command::Tts { end_of_stream, .. } = last {
+                    *end_of_stream = Some(true);
+                }
+            } else if !self.is_hanging_up {
+                commands.push(Command::Tts {
+                    text: "".to_string(),
+                    speaker: None,
+                    play_id: Some(play_id.to_string()),
+                    auto_hangup: None,
+                    streaming: Some(true),
+                    end_of_stream: Some(true),
+                    option: None,
+                    wait_input_timeout: None,
+                    base64: None,
+                });
+            }
         }
 
         commands
@@ -962,6 +1026,8 @@ impl LlmHandler {
                 if has_hangup {
                     commands.push(self.create_tts_command(text, wait_input_timeout, Some(true)));
                     tool_commands.retain(|c| !matches!(c, Command::Hangup { .. }));
+                    // Mark as hanging up to prevent interruption
+                    self.is_hanging_up = true;
                 } else {
                     commands.push(self.create_tts_command(text, wait_input_timeout, None));
                 }
@@ -1059,7 +1125,9 @@ impl DialogueHandler for LlmHandler {
                 }
 
                 self.last_asr_final_at = Some(std::time::Instant::now());
+                self.last_interaction_at = std::time::Instant::now();
                 self.is_speaking = false;
+                self.consecutive_follow_ups = 0;
 
                 self.history.push(ChatMessage {
                     role: "user".to_string(),
@@ -1079,7 +1147,8 @@ impl DialogueHandler for LlmHandler {
                     _ => false,
                 };
 
-                if self.is_speaking && should_check {
+                // Do not allow interruption if we are in the process of hanging up (e.g. saying goodbye)
+                if self.is_speaking && !self.is_hanging_up && should_check {
                     // 1. Protection Period Check
                     if let Some(last_start) = self.last_tts_start_at {
                         let ignore_ms = self.interruption_config.ignore_first_ms.unwrap_or(800);
@@ -1127,12 +1196,50 @@ impl DialogueHandler for LlmHandler {
             }
 
             SessionEvent::Silence { .. } => {
-                info!("Silence timeout detected, triggering follow-up");
-                self.generate_response().await
+                let follow_up_config = if let Some(scene_id) = &self.current_scene_id {
+                    self.scenes
+                        .get(scene_id)
+                        .and_then(|s| s.follow_up)
+                        .or(self.global_follow_up_config)
+                } else {
+                    self.global_follow_up_config
+                };
+
+                if let Some(config) = follow_up_config {
+                    if !self.is_speaking
+                        && self.last_interaction_at.elapsed().as_millis() as u64 >= config.timeout
+                    {
+                        if self.consecutive_follow_ups >= config.max_count {
+                            info!("Max follow-up count reached, hanging up");
+                            return Ok(vec![Command::Hangup {
+                                reason: Some("Max follow-up reached".to_string()),
+                                initiator: Some("system".to_string()),
+                            }]);
+                        }
+
+                        info!(
+                            "Silence timeout detected ({}ms), triggering follow-up ({}/{})",
+                            self.last_interaction_at.elapsed().as_millis(),
+                            self.consecutive_follow_ups + 1,
+                            config.max_count
+                        );
+                        self.consecutive_follow_ups += 1;
+                        self.last_interaction_at = std::time::Instant::now();
+                        return self.generate_response().await;
+                    }
+                }
+                Ok(vec![])
+            }
+
+            SessionEvent::TrackStart { .. } => {
+                self.is_speaking = true;
+                Ok(vec![])
             }
 
             SessionEvent::TrackEnd { .. } => {
                 self.is_speaking = false;
+                self.is_hanging_up = false;
+                self.last_interaction_at = std::time::Instant::now();
                 Ok(vec![])
             }
 
@@ -1232,10 +1339,10 @@ mod tests {
             &self,
             _config: &LlmConfig,
             _history: &[ChatMessage],
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<LlmStreamEvent>> + Send>>> {
             let response = self.call(_config, _history).await?;
             let s = async_stream::stream! {
-                yield Ok(response);
+                yield Ok(LlmStreamEvent::Content(response));
             };
             Ok(Box::pin(s))
         }
@@ -1282,6 +1389,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,
@@ -1333,6 +1441,7 @@ mod tests {
             provider,
             rag.clone(),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,
@@ -1384,6 +1493,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,
@@ -1410,8 +1520,8 @@ mod tests {
             confidence: None,
         };
         let commands = handler.on_event(&event).await?;
-        // "Hello! How can I help you today?" -> split into two
-        assert_eq!(commands.len(), 2);
+        // "Hello! How can I help you today?" -> split into two + EOS
+        assert_eq!(commands.len(), 3);
         if let Command::Tts { text, .. } = &commands[0] {
             assert!(text.contains("Hello"));
         } else {
@@ -1483,6 +1593,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,
@@ -1535,10 +1646,14 @@ mod tests {
                 panic!("Expected Tts");
             }
 
-            if let Command::Hangup { .. } = &commands[3] {
+            if let Command::Tts {
+                auto_hangup: Some(true),
+                ..
+            } = &commands[3]
+            {
                 // Ok
             } else {
-                panic!("Expected Hangup");
+                panic!("Expected Tts with auto_hangup");
             }
         } else {
             panic!("Expected Tts");
@@ -1555,6 +1670,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,
@@ -1613,6 +1729,7 @@ mod tests {
             provider,
             Arc::new(RecordingRag::new()),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,
@@ -1640,6 +1757,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_follow_up_logic() -> Result<()> {
+        use std::time::Duration;
+
+        // 1. Setup handler with follow-up config
+        let follow_up_config = super::super::FollowUpConfig {
+            timeout: 100, // 100ms for testing
+            max_count: 2,
+        };
+
+        // Provider that returns responses for follow-ups
+        let provider = Arc::new(TestProvider::new(vec![
+            "Follow up 1".to_string(),
+            "Follow up 2".to_string(),
+            "Response to user".to_string(),
+        ]));
+
+        let mut handler = LlmHandler::with_provider(
+            LlmConfig::default(),
+            provider,
+            Arc::new(NoopRagRetriever),
+            crate::playbook::InterruptionConfig::default(),
+            Some(follow_up_config),
+            HashMap::new(),
+            None,
+            None,
+        );
+
+        // 2. Simulate initial interaction end
+        handler.last_interaction_at = std::time::Instant::now();
+        handler.is_speaking = false;
+
+        // 3. Silence < timeout
+        let event = SessionEvent::Silence {
+            track_id: "t1".to_string(),
+            timestamp: 0,
+            start_time: 0,
+            duration: 50,
+            samples: None,
+        };
+        let commands = handler.on_event(&event).await?;
+        assert!(commands.is_empty(), "Should not trigger if < timeout");
+
+        // 4. Silence >= timeout
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        // We need to act as if time passed. logic uses last_interaction_at.elapsed()
+        // Wait, handler.last_interaction_at was set to now(). Sleep ensures elapsed() > 100ms.
+
+        let event = SessionEvent::Silence {
+            track_id: "t1".to_string(),
+            timestamp: 0,
+            start_time: 0,
+            duration: 100,
+            samples: None,
+        };
+        let commands = handler.on_event(&event).await?;
+        assert_eq!(commands.len(), 1, "Should trigger follow-up 1");
+        if let Command::Tts { text, .. } = &commands[0] {
+            assert_eq!(text, "Follow up 1");
+        }
+        assert_eq!(handler.consecutive_follow_ups, 1);
+
+        // 4b. Simulate bot finishing speaking Follow up 1
+        // generate_response sets is_speaking = true. We need to clear it.
+        let event = SessionEvent::TrackEnd {
+            track_id: "t1".to_string(),
+            timestamp: 0,
+            play_id: None,
+            duration: 100,
+            ssrc: 0,
+        };
+        handler.on_event(&event).await?;
+        assert!(
+            !handler.is_speaking,
+            "Bot should not be speaking after TrackEnd"
+        );
+
+        // 5. Simulate bot speaking (TrackStart/End updates tracking) -- Actually verifying 2nd timeout
+        // Reset interaction time to now (done inside handler on Silence event trigger?
+        // Yes: self.last_interaction_at = std::time::Instant::now(); in Silence block)
+        // But we want to verify the loop.
+
+        // Wait again for timeout
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        let event = SessionEvent::Silence {
+            track_id: "t1".to_string(),
+            timestamp: 0,
+            start_time: 0,
+            duration: 100,
+            samples: None,
+        };
+        let commands = handler.on_event(&event).await?;
+        assert_eq!(commands.len(), 1, "Should trigger follow-up 2");
+        if let Command::Tts { text, .. } = &commands[0] {
+            assert_eq!(text, "Follow up 2");
+        }
+        assert_eq!(handler.consecutive_follow_ups, 2);
+
+        // 5b. Simulate bot finishing speaking Follow up 2
+        let event = SessionEvent::TrackEnd {
+            track_id: "t1".to_string(),
+            timestamp: 0,
+            play_id: None,
+            duration: 100,
+            ssrc: 0,
+        };
+        handler.on_event(&event).await?;
+
+        // 6. Max count reached
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        let event = SessionEvent::Silence {
+            track_id: "t1".to_string(),
+            timestamp: 0,
+            start_time: 0,
+            duration: 100,
+            samples: None,
+        };
+        let commands = handler.on_event(&event).await?;
+        assert_eq!(commands.len(), 1, "Should hangup after max count");
+        assert!(matches!(commands[0], Command::Hangup { .. }));
+
+        // 7. Reset on user speech
+        handler.consecutive_follow_ups = 2; // Artificially set high
+        let event = SessionEvent::AsrFinal {
+            track_id: "t1".to_string(),
+            timestamp: 0,
+            index: 0,
+            start_time: None,
+            end_time: None,
+            text: "User speaks".to_string(),
+            is_filler: None,
+            confidence: None,
+        };
+        // This will trigger generate_response (consuming "Response to user" from provider)
+        let _ = handler.on_event(&event).await?;
+        assert_eq!(
+            handler.consecutive_follow_ups, 0,
+            "Should reset count on AsrFinal"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_interruption_protection_period() -> Result<()> {
         let provider = Arc::new(TestProvider::new(vec!["Some long response".to_string()]));
         let mut config = crate::playbook::InterruptionConfig::default();
@@ -1650,6 +1910,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             config,
+            None,
             HashMap::new(),
             None,
             None,
@@ -1700,6 +1961,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             config,
+            None,
             HashMap::new(),
             None,
             None,
@@ -1767,6 +2029,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,
@@ -1797,6 +2060,7 @@ mod tests {
             provider,
             Arc::new(NoopRagRetriever),
             crate::playbook::InterruptionConfig::default(),
+            None,
             HashMap::new(),
             None,
             None,

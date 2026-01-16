@@ -1,3 +1,17 @@
+# Active Call Configuration
+#
+# CLI Options (override config file):
+#   --conf <path>          : Load configuration from file
+#   --http <addr:port>     : HTTP server bind address
+#   --sip <addr:port>      : SIP server bind address  
+#   --handler <value>      : Quick handler setup
+#                            - URL (http://...) for webhook handler
+#                            - .md file for playbook default handler
+#
+# Examples:
+#   ./active-call --handler https://api.example.com/webhook
+#   ./active-call --handler default.md --sip 0.0.0.0:13050
+
 addr = "0.0.0.0"
 http_addr = "0.0.0.0:8080"
 udp_port = 13050
@@ -26,6 +40,31 @@ media_cache_path = "./config/mediacache"
 
 sip_addr = "0.0.0.0"
 sip_port = 13050     # don't use 5060
+
+# Invitation handler - handles incoming SIP invitations
+# Option 1: Webhook handler - forward invitations to HTTP endpoint
+# [handler]
+# type = "webhook"
+# url = "http://localhost:8090/webhook"
+# method = "POST"
+
+# Option 2: Playbook handler - route calls to playbooks based on caller/callee patterns
+# [handler]
+# type = "playbook"
+# default = "default.md"  # optional: default playbook when no rules match
+# 
+# [[handler.rules]]
+# caller = "^\\+1\\d{10}$"        # regex pattern for caller number
+# callee = "^sip:support@.*"      # regex pattern for callee number
+# playbook = "support.md"         # playbook file to use
+# 
+# [[handler.rules]]
+# caller = "^\\+86\\d+"           # pattern for Chinese numbers
+# playbook = "chinese.md"         # optional: only match caller
+# 
+# [[handler.rules]]
+# callee = "^sip:sales@.*"        # optional: only match callee
+# playbook = "sales.md"
 
 [sip_handler]
 type = "webhook"

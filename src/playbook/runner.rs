@@ -47,6 +47,7 @@ impl PlaybookRunner {
             let mut llm_handler = LlmHandler::new(
                 llm_config,
                 interruption_config,
+                playbook.config.follow_up,
                 playbook.scenes.clone(),
                 dtmf_config,
                 playbook.initial_scene_id.clone(),

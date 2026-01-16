@@ -17,6 +17,10 @@ pub struct Cli {
 
     #[clap(long)]
     pub sip: Option<String>,
+
+    /// SIP invitation handler: URL for webhook (http://...) or playbook file (.md)
+    #[clap(long)]
+    pub handler: Option<String>,
 }
 
 pub(crate) fn default_config_recorder_path() -> String {
@@ -168,6 +172,18 @@ pub enum InviteHandlerConfig {
         method: Option<String>,
         headers: Option<Vec<(String, String)>>,
     },
+    Playbook {
+        rules: Vec<PlaybookRule>,
+        default: Option<String>,
+    },
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PlaybookRule {
+    pub caller: Option<String>,
+    pub callee: Option<String>,
+    pub playbook: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -286,5 +302,104 @@ impl Config {
         }
 
         fallback
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_playbook_handler_config_parsing() {
+        let toml_config = r#"
+http_addr = "0.0.0.0:8080"
+addr = "0.0.0.0"
+udp_port = 25060
+
+[handler]
+type = "playbook"
+default = "default.md"
+
+[[handler.rules]]
+caller = "^\\+1\\d{10}$"
+callee = "^sip:support@.*"
+playbook = "support.md"
+
+[[handler.rules]]
+caller = "^\\+86\\d+"
+playbook = "chinese.md"
+
+[[handler.rules]]
+callee = "^sip:sales@.*"
+playbook = "sales.md"
+"#;
+
+        let config: Config = toml::from_str(toml_config).unwrap();
+
+        assert!(config.handler.is_some());
+        if let Some(InviteHandlerConfig::Playbook { rules, default }) = config.handler {
+            assert_eq!(default, Some("default.md".to_string()));
+            assert_eq!(rules.len(), 3);
+
+            assert_eq!(rules[0].caller, Some(r"^\+1\d{10}$".to_string()));
+            assert_eq!(rules[0].callee, Some("^sip:support@.*".to_string()));
+            assert_eq!(rules[0].playbook, "support.md");
+
+            assert_eq!(rules[1].caller, Some(r"^\+86\d+".to_string()));
+            assert_eq!(rules[1].callee, None);
+            assert_eq!(rules[1].playbook, "chinese.md");
+
+            assert_eq!(rules[2].caller, None);
+            assert_eq!(rules[2].callee, Some("^sip:sales@.*".to_string()));
+            assert_eq!(rules[2].playbook, "sales.md");
+        } else {
+            panic!("Expected Playbook handler config");
+        }
+    }
+
+    #[test]
+    fn test_playbook_handler_config_without_default() {
+        let toml_config = r#"
+http_addr = "0.0.0.0:8080"
+addr = "0.0.0.0"
+udp_port = 25060
+
+[handler]
+type = "playbook"
+
+[[handler.rules]]
+caller = "^\\+1.*"
+playbook = "us.md"
+"#;
+
+        let config: Config = toml::from_str(toml_config).unwrap();
+
+        if let Some(InviteHandlerConfig::Playbook { rules, default }) = config.handler {
+            assert_eq!(default, None);
+            assert_eq!(rules.len(), 1);
+        } else {
+            panic!("Expected Playbook handler config");
+        }
+    }
+
+    #[test]
+    fn test_webhook_handler_config_still_works() {
+        let toml_config = r#"
+http_addr = "0.0.0.0:8080"
+addr = "0.0.0.0"
+udp_port = 25060
+
+[handler]
+type = "webhook"
+url = "http://example.com/webhook"
+"#;
+
+        let config: Config = toml::from_str(toml_config).unwrap();
+
+        if let Some(InviteHandlerConfig::Webhook { url, .. }) = config.handler {
+            assert_eq!(url, Some("http://example.com/webhook".to_string()));
+        } else {
+            panic!("Expected Webhook handler config");
+        }
     }
 }

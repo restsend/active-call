@@ -126,6 +126,7 @@ impl AppStateInner {
         let token = self.token.child_token();
         let endpoint_inner = self.endpoint.inner.clone();
         let dialog_layer = self.dialog_layer.clone();
+        let app_state_clone = self.clone();
 
         match self.start_registration().await {
             Ok(count) => {
@@ -145,7 +146,7 @@ impl AppStateInner {
                     info!("endpoint serve error: {:?}", e);
                 }
             }
-            result = self.process_incoming_request(dialog_layer.clone(), incoming_txs) => {
+            result = app_state_clone.process_incoming_request(dialog_layer.clone(), incoming_txs) => {
                 if let Err(e) = result {
                     info!("process incoming request error: {:?}", e);
                 }
@@ -172,7 +173,7 @@ impl AppStateInner {
     }
 
     async fn process_incoming_request(
-        &self,
+        self: Arc<Self>,
         dialog_layer: Arc<DialogLayer>,
         mut incoming: TransactionReceiver,
     ) -> Result<()> {
@@ -215,7 +216,10 @@ impl AppStateInner {
                         Some(ref create_invitation_handler) => {
                             create_invitation_handler(self.config.handler.as_ref()).ok()
                         }
-                        _ => default_create_invite_handler(self.config.handler.as_ref()),
+                        _ => default_create_invite_handler(
+                            self.config.handler.as_ref(),
+                            Some(self.clone()),
+                        ),
                     };
                     let invitation_handler = match invitation_handler {
                         Some(h) => h,

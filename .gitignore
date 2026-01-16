@@ -8,3 +8,7 @@ Cargo.lock
 *.decoded
 *.encoded
 .DS_Store
+target/
+is_filler.md
+todo.md
+bank-demo/

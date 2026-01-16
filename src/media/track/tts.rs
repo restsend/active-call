@@ -200,12 +200,16 @@ impl TtsTask {
 
                         if first_entry.chunks.is_empty(){
                             let elapsed = first_entry.finish_at.elapsed();
-                            if self.streaming && cmd_finished && (tts_finished || elapsed > Duration::from_secs(10)) {
+                            // In streaming mode, finish when:
+                            // 1. cmd_finished is true (end_of_stream received)
+                            // 2. AND either tts_finished, entry.finished, or 10s timeout
+                            if self.streaming && cmd_finished && (tts_finished || first_entry.finished || elapsed > Duration::from_secs(10)) {
                                 debug!(
                                     session_id = %self.session_id,
                                     track_id = %self.track_id,
                                     play_id = ?self.play_id,
                                     tts_finished,
+                                    entry_finished = first_entry.finished,
                                     elapsed_ms = elapsed.as_millis(),
                                     "tts streaming finished"
                                 );
@@ -372,6 +376,20 @@ impl TtsTask {
         let meta_entry = self.metadatas.entry(assume_seq).or_default();
         meta_entry.text = text.clone();
         meta_entry.recv_time = crate::media::get_timestamp();
+
+        // Handle empty text (e.g. just for signaling end_of_stream or hangup updates)
+        if text.is_empty() && !cmd.base64 {
+            // In non-streaming mode, we need to mark this specific sequence as finished
+            // because we won't call synthesize for it.
+            // In streaming mode, multiple commands share the same entry (0).
+            // We must NOT mark it finished here, because previous commands might still be generating audio.
+            // The TTS provider (client) is responsible for marking entry 0 finished when the stream ends.
+            if !self.streaming {
+                let emit_entry = self.get_emit_entry_mut(assume_seq);
+                emit_entry.map(|entry| entry.finished = true);
+            }
+            return;
+        }
 
         let emit_entry = self.get_emit_entry_mut(assume_seq);
 
@@ -563,8 +581,11 @@ impl TtsTask {
                     })
                     .ok();
 
-                // streaming mode use tts_finished to indicate task finished
+                // For streaming mode, mark the emit entry as finished
+                // This allows the emit loop to complete after all chunks are sent
                 if self.streaming {
+                    self.get_emit_entry_mut(assume_seq)
+                        .map(|entry| entry.finished = true);
                     return;
                 }
 

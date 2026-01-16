@@ -42,6 +42,8 @@ pub struct AmbianceProcessor {
     enabled: bool,
     current_level: f32,
     transition_speed: f32,
+    resample_phase: u32,
+    resample_step: u32,
 }
 
 impl AmbianceProcessor {
@@ -55,15 +57,17 @@ impl AmbianceProcessor {
 
         info!("Loading ambiance {}: samples={}", path, samples.len());
 
-        let normal_level = option.normal_level.unwrap_or(0.8);
+        let normal_level = option.normal_level.unwrap_or(0.3);
         Ok(Self {
             samples,
             cursor: 0,
-            duck_level: option.duck_level.unwrap_or(0.2), // Duck to 20% volume
-            normal_level,                                 // Play at 80% volume normally
+            duck_level: option.duck_level.unwrap_or(0.1),
+            normal_level,
             enabled: option.enabled.unwrap_or(true),
             current_level: normal_level,
-            transition_speed: option.transition_speed.unwrap_or(0.05), // Smooth transition per frame
+            transition_speed: option.transition_speed.unwrap_or(0.01),
+            resample_phase: 0,
+            resample_step: 1 << 16,
         })
     }
 
@@ -76,13 +80,40 @@ impl AmbianceProcessor {
         self.duck_level = duck;
     }
 
-    fn get_next_ambient_sample(&mut self) -> i16 {
+    #[inline]
+    fn get_ambient_sample_with_rate(&mut self, target_sample_rate: u32) -> i16 {
         if self.samples.is_empty() {
             return 0;
         }
-        let s = self.samples[self.cursor];
-        self.cursor = (self.cursor + 1) % self.samples.len();
-        s
+
+        self.resample_step =
+            (((INTERNAL_SAMPLERATE as u64) << 16) / target_sample_rate as u64) as u32;
+        let sample = self.samples[self.cursor];
+
+        self.resample_phase += self.resample_step;
+        while self.resample_phase >= (1 << 16) {
+            self.resample_phase -= 1 << 16;
+            self.cursor = (self.cursor + 1) % self.samples.len();
+        }
+
+        sample
+    }
+
+    #[inline]
+    fn soft_mix(signal: i16, ambient: i16, level: f32) -> i16 {
+        let ambient_scaled = (ambient as i32 * (level * 256.0) as i32) >> 8;
+        let signal_i32 = signal as i32;
+        let mixed = signal_i32 + ambient_scaled;
+
+        if mixed > 32767 {
+            let over = mixed - 32767;
+            (32767 - (over >> 2)) as i16
+        } else if mixed < -32768 {
+            let under = -32768 - mixed;
+            (-32768 + (under >> 2)) as i16
+        } else {
+            mixed as i16
+        }
     }
 }
 
@@ -112,31 +143,43 @@ impl Processor for AmbianceProcessor {
             }
         }
 
+        let sample_rate = if frame.sample_rate > 0 {
+            frame.sample_rate
+        } else {
+            INTERNAL_SAMPLERATE
+        };
+        let channels = frame.channels.max(1) as usize;
+
         match &mut frame.samples {
             Samples::PCM { samples } => {
-                for s in samples.iter_mut() {
-                    let ambient = self.get_next_ambient_sample() as f32 * self.current_level;
-                    let mixed = *s as f32 + ambient;
-                    *s = mixed.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                let frame_sample_count = samples.len() / channels;
+                for i in 0..frame_sample_count {
+                    let ambient = self.get_ambient_sample_with_rate(sample_rate);
+                    for c in 0..channels {
+                        let idx = i * channels + c;
+                        if idx < samples.len() {
+                            samples[idx] =
+                                Self::soft_mix(samples[idx], ambient, self.current_level);
+                        }
+                    }
                 }
             }
             Samples::Empty => {
-                let sample_rate = if frame.sample_rate > 0 {
-                    frame.sample_rate
-                } else {
-                    INTERNAL_SAMPLERATE
-                };
                 let frame_size = (sample_rate as usize * 20) / 1000;
-                let mut ambient_samples = Vec::with_capacity(frame_size);
+                let mut ambient_samples = Vec::with_capacity(frame_size * channels);
                 for _ in 0..frame_size {
-                    let ambient = self.get_next_ambient_sample() as f32 * self.current_level;
-                    ambient_samples.push(ambient.clamp(i16::MIN as f32, i16::MAX as f32) as i16);
+                    let ambient = self.get_ambient_sample_with_rate(sample_rate);
+                    let ambient_scaled =
+                        ((ambient as i32 * (self.current_level * 256.0) as i32) >> 8) as i16;
+                    for _ in 0..channels {
+                        ambient_samples.push(ambient_scaled);
+                    }
                 }
                 frame.samples = Samples::PCM {
                     samples: ambient_samples,
                 };
                 frame.sample_rate = sample_rate;
-                frame.channels = 1;
+                frame.channels = channels as u16;
             }
             _ => {}
         }

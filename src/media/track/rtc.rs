@@ -69,6 +69,7 @@ pub struct RtcTrack {
     next_rtp_timestamp: u32,
     next_rtp_sequence_number: u16,
     last_packet_time: Option<Instant>,
+    last_remote_sdp: Option<String>,
 }
 
 impl RtcTrack {
@@ -94,6 +95,7 @@ impl RtcTrack {
             next_rtp_timestamp: 0,
             next_rtp_sequence_number: 0,
             last_packet_time: None,
+            last_remote_sdp: None,
         }
     }
 
@@ -224,13 +226,21 @@ impl RtcTrack {
         // 1. Event Loop
         crate::spawn(async move {
             info!(track_id=%track_id_log, "RtcTrack event loop started");
-            let mut events = futures::stream::unfold(pc_clone, |pc| async move {
+            let mut events = futures::stream::unfold(pc_clone.clone(), |pc| async move {
                 pc.recv().await.map(|ev| (ev, pc))
             })
             .take_until(cancel_token.cancelled())
             .boxed();
 
+            let mut event_count = 0;
             while let Some(event) = events.next().await {
+                event_count += 1;
+                let event_type = match &event {
+                    PeerConnectionEvent::Track(_) => "Track",
+                    PeerConnectionEvent::DataChannel(_) => "DataChannel",
+                };
+                debug!(track_id=%track_id_log, "Received PeerConnectionEvent #{}: {}", event_count, event_type);
+
                 if let PeerConnectionEvent::Track(transceiver) = event {
                     if let Some(receiver) = transceiver.receiver() {
                         let track = receiver.track();
@@ -247,7 +257,7 @@ impl RtcTrack {
                     }
                 }
             }
-            debug!(track_id=%track_id_log, "RtcTrack event loop ended");
+            debug!(track_id=%track_id_log, "RtcTrack event loop ended, total events: {}", event_count);
         });
 
         // 2. State Monitoring
@@ -412,6 +422,97 @@ impl RtcTrack {
         }
         Ok(())
     }
+
+    /// Normalize SDP for comparison by removing session-specific fields
+    fn normalize_sdp(sdp: &str) -> String {
+        sdp.lines()
+            .map(|line| {
+                // For origin line (o=), only keep session id and version for comparison
+                // Format: o=<username> <sess-id> <sess-version> <nettype> <addrtype> <unicast-address>
+                // Session version increment indicates session changes (RFC 4566)
+                if line.starts_with("o=") {
+                    // Extract session id and version (2nd and 3rd fields)
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        return format!("o= {} {}", parts[1], parts[2]);
+                    }
+                }
+                line.to_string()
+            })
+            .filter(|line| {
+                // Filter out lines that can change between identical sessions
+                !line.starts_with("t=") &&  // timing line can vary
+                !line.starts_with("a=ssrc:") &&  // SSRC attributes (but SSRC change shows in o= version)
+                !line.starts_with("a=msid:") &&  // media stream ID
+                !line.trim().is_empty()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    async fn update_remote_description_internal(&mut self, answer: &String) -> Result<()> {
+        if let Some(pc) = &self.peer_connection {
+            // Check if SDP is the same as the last one we set
+            if let Some(ref last_sdp) = self.last_remote_sdp {
+                if Self::normalize_sdp(last_sdp) == Self::normalize_sdp(answer) {
+                    debug!(track_id=%self.track_id, "SDP unchanged, skipping update_remote_description");
+                    return Ok(());
+                }
+            }
+
+            let is_first_remote_sdp = self.last_remote_sdp.is_none();
+
+            let sdp_obj = rustrtc::SessionDescription::parse(rustrtc::SdpType::Answer, answer)?;
+            match pc.set_remote_description(sdp_obj.clone()).await {
+                Ok(_) => {
+                    debug!(track_id=%self.track_id, "set_remote_description succeeded");
+                    self.last_remote_sdp = Some(answer.clone());
+                }
+                Err(e) => {
+                    if self.rtc_config.mode == TransportMode::Rtp {
+                        info!(track_id=%self.track_id, "set_remote_description failed ({}), attempting to re-sync state for SIP update", e);
+                        // SIP 200 OK often sends a final answer after 183 Session Progress early answer.
+                        // WebRTC PeerConnection state machine requires:
+                        //   - stable -> setLocalDescription(offer) -> have-local-offer -> setRemoteDescription(answer) -> stable
+                        // After 183 with SDP, we're in stable state. We can't accept another answer (200 OK).
+                        // Solution: Create a new offer to transition to have-local-offer, then accept the answer.
+                        let offer = pc.create_offer().await?;
+                        pc.set_local_description(offer)?;
+                        pc.set_remote_description(sdp_obj).await?;
+                        self.last_remote_sdp = Some(answer.clone());
+                        info!(track_id=%self.track_id, "successfully re-synced WebRTC state for SIP update");
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            }
+
+            // CRITICAL FIX: When server initiates offer (common in SIP->WebRTC),
+            // Track events only fire when processing remote *offers*, not answers.
+            // Since we send offer and receive answer, we must manually start receiver tracks.
+            // Only do this on the first remote SDP (not on re-invites) and for WebRTC mode.
+            if is_first_remote_sdp && self.rtc_config.mode != TransportMode::Rtp {
+                for transceiver in pc.get_transceivers() {
+                    if let Some(receiver) = transceiver.receiver() {
+                        let track = receiver.track();
+                        info!(track_id=%self.track_id, "WebRTC mode: manually starting receiver track handler after first answer");
+                        Self::spawn_track_handler(
+                            track,
+                            self.packet_sender.clone(),
+                            self.track_id.clone(),
+                            self.cancel_token.clone(),
+                            self.processor_chain.clone(),
+                            self.payload_type,
+                        );
+                    }
+                }
+            }
+
+            // Extract negotiated payload types from SDP string
+            self.parse_sdp_payload_types(rustrtc::SdpType::Answer, answer)?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -437,8 +538,41 @@ impl Track for RtcTrack {
             anyhow::anyhow!("No PeerConnection available for track {}", self.track_id)
         })?;
 
+        debug!(track_id=%self.track_id, "Before set_remote_description: transceivers count = {}", pc.get_transceivers().len());
+        for (i, t) in pc.get_transceivers().iter().enumerate() {
+            debug!(track_id=%self.track_id, "  Transceiver #{}: kind={:?}, mid={:?}, direction={:?}", 
+                i, t.kind(), t.mid(), t.direction());
+        }
+
         let sdp = rustrtc::SessionDescription::parse(rustrtc::SdpType::Offer, &offer)?;
         pc.set_remote_description(sdp).await?;
+
+        debug!(track_id=%self.track_id, "After set_remote_description: transceivers count = {}", pc.get_transceivers().len());
+        for (i, t) in pc.get_transceivers().iter().enumerate() {
+            debug!(track_id=%self.track_id, "  Transceiver #{}: kind={:?}, mid={:?}, direction={:?}, has_receiver={}", 
+                i, t.kind(), t.mid(), t.direction(), t.receiver().is_some());
+        }
+
+        // CRITICAL FIX: When server-initiated signaling (common WebRTC pattern),
+        // Track events fire when remote peer sends offer, not when we accept answer.
+        // Since we received remote offer here and added local track first,
+        // we must manually start receiver tracks as Track events won't fire.
+        if self.rtc_config.mode != TransportMode::Rtp {
+            for transceiver in pc.get_transceivers() {
+                if let Some(receiver) = transceiver.receiver() {
+                    let track = receiver.track();
+                    info!(track_id=%self.track_id, "WebRTC handshake: manually starting receiver track handler for browser audio");
+                    Self::spawn_track_handler(
+                        track,
+                        self.packet_sender.clone(),
+                        self.track_id.clone(),
+                        self.cancel_token.clone(),
+                        self.processor_chain.clone(),
+                        self.payload_type,
+                    );
+                }
+            }
+        }
 
         self.parse_sdp_payload_types(rustrtc::SdpType::Offer, &offer)?;
 
@@ -457,29 +591,7 @@ impl Track for RtcTrack {
     }
 
     async fn update_remote_description(&mut self, answer: &String) -> Result<()> {
-        if let Some(pc) = &self.peer_connection {
-            let sdp_obj = rustrtc::SessionDescription::parse(rustrtc::SdpType::Answer, answer)?;
-            match pc.set_remote_description(sdp_obj.clone()).await {
-                Ok(_) => {}
-                Err(e) => {
-                    if self.rtc_config.mode == TransportMode::Rtp {
-                        info!(track_id=%self.track_id, "set_remote_description failed ({}), attempting to re-sync state for SIP update", e);
-                        // SIP 200 OK often sends a final answer after 183 early answer.
-                        // WebRTC state machine dislikes multiple answers.
-                        // We trick it by creating a new local offer to reset state to HaveLocalOffer.
-                        let offer = pc.create_offer().await?;
-                        pc.set_local_description(offer)?;
-                        pc.set_remote_description(sdp_obj).await?;
-                    } else {
-                        return Err(e.into());
-                    }
-                }
-            }
-
-            // Extract negotiated payload types from SDP string
-            self.parse_sdp_payload_types(rustrtc::SdpType::Answer, answer)?;
-        }
-        Ok(())
+        self.update_remote_description_internal(answer).await
     }
 
     async fn start(

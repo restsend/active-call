@@ -78,6 +78,174 @@ pub async fn webrtc_handler(
     call_handler(ActiveCallType::Webrtc, ws, state, params).await
 }
 
+/// Core call handling logic that works with either WebSocket or mpsc channels
+pub async fn call_handler_core(
+    call_type: ActiveCallType,
+    session_id: String,
+    app_state: AppState,
+    cancel_token: CancellationToken,
+    audio_receiver: tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+    server_side_track: Option<String>,
+    dump_events: bool,
+    ping_interval: u64,
+    mut command_receiver: tokio::sync::mpsc::UnboundedReceiver<Command>,
+    event_sender_to_client: tokio::sync::mpsc::UnboundedSender<crate::event::SessionEvent>,
+) {
+    let _cancel_guard = cancel_token.clone().drop_guard();
+    let track_config = TrackConfig::default();
+    let active_call = Arc::new(ActiveCall::new(
+        call_type.clone(),
+        cancel_token.clone(),
+        session_id.clone(),
+        app_state.invitation.clone(),
+        app_state.clone(),
+        track_config,
+        Some(audio_receiver),
+        dump_events,
+        server_side_track,
+        None, // No extra data for now
+    ));
+
+    // Check for pending playbook
+    {
+        let mut pending = app_state.pending_playbooks.lock().await;
+        if let Some(name_or_content) = pending.remove(&session_id) {
+            let variables = active_call.call_state.read().await.extras.clone();
+            let playbook_result = if name_or_content.trim().starts_with("---") {
+                Playbook::parse(&name_or_content, variables.as_ref())
+            } else {
+                // If path already contains config/playbook, use it as-is; otherwise prepend it
+                let path = if name_or_content.starts_with("config/playbook/") {
+                    PathBuf::from(&name_or_content)
+                } else {
+                    PathBuf::from("config/playbook").join(&name_or_content)
+                };
+                Playbook::load(path, variables.as_ref()).await
+            };
+
+            match playbook_result {
+                Ok(playbook) => match PlaybookRunner::new(playbook, active_call.clone()) {
+                    Ok(runner) => {
+                        crate::spawn(async move {
+                            runner.run().await;
+                        });
+                        let display_name = if name_or_content.trim().starts_with("---") {
+                            "custom content"
+                        } else {
+                            &name_or_content
+                        };
+                        info!(session_id, "Playbook runner started for {}", display_name);
+                    }
+                    Err(e) => {
+                        let display_name = if name_or_content.trim().starts_with("---") {
+                            "custom content"
+                        } else {
+                            &name_or_content
+                        };
+                        warn!(
+                            session_id,
+                            "Failed to create runner {}: {}", display_name, e
+                        )
+                    }
+                },
+                Err(e) => {
+                    let display_name = if name_or_content.trim().starts_with("---") {
+                        "custom content"
+                    } else {
+                        &name_or_content
+                    };
+                    warn!(
+                        session_id,
+                        "Failed to load playbook {}: {}", display_name, e
+                    );
+                    let event = SessionEvent::Error {
+                        timestamp: crate::media::get_timestamp(),
+                        track_id: session_id.clone(),
+                        sender: "playbook".to_string(),
+                        error: format!("{}", e),
+                        code: None,
+                    };
+                    event_sender_to_client.send(event).ok();
+                    return;
+                }
+            }
+        }
+    }
+
+    let recv_commands_loop = async {
+        while let Some(command) = command_receiver.recv().await {
+            if let Err(_) = active_call.enqueue_command(command).await {
+                break;
+            }
+        }
+    };
+
+    let mut event_receiver = active_call.event_sender.subscribe();
+    let send_events_loop = async {
+        loop {
+            match event_receiver.recv().await {
+                Ok(event) => {
+                    if let Err(_) = event_sender_to_client.send(event) {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    };
+
+    let send_ping_loop = async {
+        if ping_interval == 0 {
+            active_call.cancel_token.cancelled().await;
+            return;
+        }
+        let mut ticker = tokio::time::interval(Duration::from_secs(ping_interval));
+        loop {
+            ticker.tick().await;
+            let payload = Utc::now().to_rfc3339();
+            let event = SessionEvent::Ping {
+                timestamp: crate::media::get_timestamp(),
+                payload: Some(payload),
+            };
+            if let Err(_) = active_call.event_sender.send(event) {
+                break;
+            }
+        }
+    };
+
+    let guard = ActiveCallGuard::new(active_call.clone());
+    info!(
+        session_id,
+        active_calls = guard.active_calls,
+        ?call_type,
+        "new call started"
+    );
+    let receiver = active_call.new_receiver();
+
+    let (r, _) = join! {
+        active_call.serve(receiver),
+        async {
+            select!{
+                _ = send_ping_loop => {},
+                _ = cancel_token.cancelled() => {},
+                _ = send_events_loop => { },
+                _ = recv_commands_loop => {
+                    info!(session_id, "Command receiver closed");
+                },
+            }
+            cancel_token.cancel();
+        }
+    };
+    match r {
+        Ok(_) => info!(session_id, "call ended successfully"),
+        Err(e) => warn!(session_id, "call ended with error: {}", e),
+    }
+
+    active_call.cleanup().await.ok();
+    debug!(session_id, "Call handler core completed");
+}
+
 pub async fn call_handler(
     call_type: ActiveCallType,
     ws: WebSocketUpgrade,
@@ -94,86 +262,29 @@ pub async fn call_handler(
     let resp = ws.on_upgrade(move |socket| async move {
         let (mut ws_sender, mut ws_receiver) = socket.split();
         let (audio_sender, audio_receiver) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+        let (command_sender, command_receiver) = tokio::sync::mpsc::unbounded_channel::<Command>();
+        let (event_sender_to_client, mut event_receiver_from_core) =
+            tokio::sync::mpsc::unbounded_channel::<crate::event::SessionEvent>();
         let cancel_token = CancellationToken::new();
-        let track_config = TrackConfig::default();
-        let active_call = Arc::new(ActiveCall::new(
-            call_type.clone(),
-            cancel_token.clone(),
-            session_id.clone(),
-            app_state.invitation.clone(),
-            app_state.clone(),
-            track_config,
-            Some(audio_receiver),
-            dump_events,
+
+        // Start core handler in background
+        let session_id_clone = session_id.clone();
+        let app_state_clone = app_state.clone();
+        let cancel_token_clone = cancel_token.clone();
+        crate::spawn(call_handler_core(
+            call_type,
+            session_id_clone,
+            app_state_clone,
+            cancel_token_clone,
+            audio_receiver,
             server_side_track,
-            None, // No extra data for now
+            dump_events,
+            ping_interval.into(),
+            command_receiver,
+            event_sender_to_client,
         ));
 
-        // Check for pending playbook
-        {
-            let mut pending = app_state.pending_playbooks.lock().await;
-            if let Some(name_or_content) = pending.remove(&session_id) {
-                let variables = active_call.call_state.read().await.extras.clone();
-                let playbook_result = if name_or_content.trim().starts_with("---") {
-                    Playbook::parse(&name_or_content, variables.as_ref())
-                } else {
-                    let path = PathBuf::from("config/playbook").join(&name_or_content);
-                    Playbook::load(path, variables.as_ref()).await
-                };
-
-                match playbook_result {
-                    Ok(playbook) => match PlaybookRunner::new(playbook, active_call.clone()) {
-                        Ok(runner) => {
-                            crate::spawn(async move {
-                                runner.run().await;
-                            });
-                            let display_name = if name_or_content.trim().starts_with("---") {
-                                "custom content"
-                            } else {
-                                &name_or_content
-                            };
-                            info!(session_id, "Playbook runner started for {}", display_name);
-                        }
-                        Err(e) => {
-                            let display_name = if name_or_content.trim().starts_with("---") {
-                                "custom content"
-                            } else {
-                                &name_or_content
-                            };
-                            warn!(
-                                session_id,
-                                "Failed to create runner {}: {}", display_name, e
-                            )
-                        }
-                    },
-                    Err(e) => {
-                        let display_name = if name_or_content.trim().starts_with("---") {
-                            "custom content"
-                        } else {
-                            &name_or_content
-                        };
-                        warn!(
-                            session_id,
-                            "Failed to load playbook {}: {}", display_name, e
-                        );
-                        let event = SessionEvent::Error {
-                            timestamp: crate::media::get_timestamp(),
-                            track_id: session_id,
-                            sender: "playbook".to_string(),
-                            error: format!("{}", e),
-                            code: None,
-                        };
-                        let message = match event.into_ws_message() {
-                            Ok(msg) => msg,
-                            Err(_) => return,
-                        };
-                        ws_sender.send(message).await.ok();
-                        return;
-                    }
-                }
-            }
-        }
-
+        // Handle WebSocket I/O
         let recv_from_ws_loop = async {
             while let Some(Ok(message)) = ws_receiver.next().await {
                 match message {
@@ -181,11 +292,11 @@ pub async fn call_handler(
                         let command = match serde_json::from_str::<Command>(&text) {
                             Ok(cmd) => cmd,
                             Err(e) => {
-                                warn!(session_id, %text, "Failed to parse command {}",e);
+                                warn!(session_id, %text, "Failed to parse command {}", e);
                                 continue;
                             }
                         };
-                        if let Err(_) = active_call.enqueue_command(command).await {
+                        if let Err(_) = command_sender.send(command) {
                             break;
                         }
                     }
@@ -201,82 +312,31 @@ pub async fn call_handler(
             }
         };
 
-        let mut event_receiver = active_call.event_sender.subscribe();
         let send_to_ws_loop = async {
-            loop {
-                match event_receiver.recv().await {
-                    Ok(event) => {
-                        let message = match event.into_ws_message() {
-                            Ok(msg) => msg,
-                            Err(_) => continue,
-                        };
-                        if let Err(_) = ws_sender.send(message).await {
-                            break;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(_) => break,
-                }
-            }
-        };
-
-        let send_ping_loop = async {
-            if ping_interval == 0 {
-                active_call.cancel_token.cancelled().await;
-                return;
-            }
-            let mut ticker = tokio::time::interval(Duration::from_secs(ping_interval.into()));
-            loop {
-                ticker.tick().await;
-                let payload = Utc::now().to_rfc3339();
-                let event = SessionEvent::Ping {
-                    timestamp: crate::media::get_timestamp(),
-                    payload: Some(payload),
+            while let Some(event) = event_receiver_from_core.recv().await {
+                let message = match event.into_ws_message() {
+                    Ok(msg) => msg,
+                    Err(_) => continue,
                 };
-                if let Err(_) = active_call.event_sender.send(event) {
+                if let Err(_) = ws_sender.send(message).await {
                     break;
                 }
             }
         };
-        let guard = ActiveCallGuard::new(active_call.clone());
-        info!(
-            session_id,
-            active_calls = guard.active_calls,
-            ?call_type,
-            "new call started"
-        );
-        let receiver = active_call.new_receiver();
 
-        let (r, _) = join! {
-            active_call.serve(receiver),
-            async {
-                select!{
-                    _ = send_ping_loop => {},
-                    _ = cancel_token.cancelled() => {},
-                    _ = send_to_ws_loop => { },
-                    _ = recv_from_ws_loop => {
-                        info!(session_id, "WebSocket closed by client");
-                    },
-                }
-                cancel_token.cancel();
-            }
-        };
-        match r {
-            Ok(_) => info!(session_id, "call ended successfully"),
-            Err(e) => warn!(session_id, "call ended with error: {}", e),
+        select! {
+            _ = recv_from_ws_loop => {
+                info!(session_id, "WebSocket receive loop ended");
+            },
+            _ = send_to_ws_loop => {
+                info!(session_id, "WebSocket send loop ended");
+            },
+            _ = cancel_token.cancelled() => {
+                info!(session_id, "WebSocket cancelled");
+            },
         }
 
-        active_call.cleanup().await.ok();
-        // Drain remaining events
-        while let Ok(event) = event_receiver.try_recv() {
-            let message = match event.into_ws_message() {
-                Ok(msg) => msg,
-                Err(_) => continue,
-            };
-            if let Err(_) = ws_sender.send(message).await {
-                break;
-            }
-        }
+        cancel_token.cancel();
         ws_sender.flush().await.ok();
         ws_sender.close().await.ok();
         debug!(session_id, "WebSocket connection closed");

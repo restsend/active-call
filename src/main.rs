@@ -59,6 +59,37 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Auto-configure handler from CLI parameter
+    if let Some(handler_str) = cli.handler {
+        use active_call::config::InviteHandlerConfig;
+
+        if handler_str.starts_with("http://") || handler_str.starts_with("https://") {
+            // Webhook handler
+            config.handler = Some(InviteHandlerConfig::Webhook {
+                url: Some(handler_str.clone()),
+                urls: None,
+                method: None,
+                headers: None,
+            });
+            info!("CLI handler configured as webhook: {}", handler_str);
+        } else if handler_str.ends_with(".md") {
+            // Playbook handler with default playbook
+            config.handler = Some(InviteHandlerConfig::Playbook {
+                rules: vec![],
+                default: Some(handler_str.clone()),
+            });
+            info!(
+                "CLI handler configured as playbook default: {}",
+                handler_str
+            );
+        } else {
+            warn!(
+                "Invalid handler format: {}. Should be http(s):// URL or .md file",
+                handler_str
+            );
+        }
+    }
+
     let mut env_filter = EnvFilter::from_default_env();
     if let Some(Ok(level)) = config
         .log_level

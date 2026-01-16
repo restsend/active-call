@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     call::{RoutingState, sip::Invitation},
     config::InviteHandlerConfig,
-    useragent::webhook::WebhookInvitationHandler,
+    useragent::{playbook_handler::PlaybookInvitationHandler, webhook::WebhookInvitationHandler},
 };
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -78,6 +78,7 @@ pub trait InvitationHandler: Send + Sync {
 
 pub fn default_create_invite_handler(
     config: Option<&InviteHandlerConfig>,
+    app_state: Option<crate::app::AppState>,
 ) -> Option<Box<dyn InvitationHandler>> {
     match config {
         Some(InviteHandlerConfig::Webhook {
@@ -98,6 +99,22 @@ pub fn default_create_invite_handler(
                 method.clone(),
                 headers.clone(),
             )))
+        }
+        Some(InviteHandlerConfig::Playbook { rules, default }) => {
+            let app_state = match app_state {
+                Some(s) => s,
+                None => {
+                    tracing::error!("app_state required for playbook invitation handler");
+                    return None;
+                }
+            };
+            match PlaybookInvitationHandler::new(rules.clone(), default.clone(), app_state) {
+                Ok(handler) => Some(Box::new(handler)),
+                Err(e) => {
+                    tracing::error!("failed to create playbook invitation handler: {}", e);
+                    None
+                }
+            }
         }
         _ => None,
     }
