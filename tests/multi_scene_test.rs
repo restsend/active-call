@@ -1,6 +1,6 @@
 use active_call::playbook::{
     ChatMessage, DialogueHandler, LlmConfig, Playbook, Scene,
-    handler::{LlmHandler, LlmProvider, RagRetriever},
+    handler::{LlmHandler, LlmProvider, LlmStreamEvent, RagRetriever},
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -25,13 +25,13 @@ impl LlmProvider for MockLlmProvider {
         &self,
         _config: &LlmConfig,
         _history: &[ChatMessage],
-    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send>>> {
         let idx = self
             .current
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let response = self.responses.get(idx).cloned().unwrap_or_default();
         let s = async_stream::stream! {
-            yield Ok(response);
+            yield Ok(LlmStreamEvent::Content(response));
         };
         Ok(Box::pin(s))
     }
@@ -99,6 +99,7 @@ async fn test_scene_transition_logic() -> Result<()> {
             prompt: "You are in intro.".to_string(),
             dtmf: None,
             play: None,
+            follow_up: None,
         },
     );
     scenes.insert(
@@ -108,6 +109,7 @@ async fn test_scene_transition_logic() -> Result<()> {
             prompt: "You are in detail.".to_string(),
             dtmf: None,
             play: None,
+            follow_up: None,
         },
     );
 
@@ -131,6 +133,7 @@ async fn test_scene_transition_logic() -> Result<()> {
         provider,
         Arc::new(NoopRag),
         Default::default(),
+        None,
         scenes,
         None,
         None,

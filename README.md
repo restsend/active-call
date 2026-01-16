@@ -68,6 +68,7 @@ For detailed information on REST endpoints and WebSocket protocols, please refer
   - **Dynamic Variables**: Supports `{{ variable }}` syntax using [minijinja](https://github.com/mitsuhiko/minijinja) for personalized prompts.
   - **LLM Integration**: Streaming responses with configurable prompts and tool-like tags.
   - **Background Ambiance**: Supports looping background audio (e.g., office noise) with auto-ducking during conversation.
+  - **Follow-up**: Automatically follow up with the user after a period of silence (e.g., "Are you still there?").
   - **DTMF Support**: Standard IVR functionality. Define global or scene-specific keypress actions (jump to scene, transfer call, or hang up).
   - **Pre-recorded Audio**: Play fixed audio files (`.wav`/`.pcm`) by adding `<play file="path/to/audio.wav" />` at the beginning of a scene.
   - **Post-hook & Summary**: Automatically generate conversation summaries and send them to a Webhook URL after the call ends. Supports multiple summary templates:
@@ -99,6 +100,9 @@ llm:
   model: "gpt-4-turbo"
 dtmf:
   "0": { action: "hangup" }
+followup:
+  timeout: 10000
+  max: 3
 posthook:
   url: "https://api.example.com/webhook"
   summary: "detailed"
@@ -133,6 +137,8 @@ To speak to a human, I can transfer you: <refer to="sip:human@domain.com" />
 |                  | `model`            | Specific realtime model (e.g., `gpt-4o-realtime`).          |
 | **ambiance**     | `path`             | Path to background audio file.                              |
 |                  | `duckLevel`        | Volume level when agent is speaking (0.0-1.0).              |
+| **followup**     | `timeout`          | Silence timeout in ms before triggering follow-up.          |
+|                  | `max`              | Maximum number of follow-up attempts.                       |
 | **recorder**     | `recorderFile`     | Path template for recording (e.g., `call_{id}.wav`).        |
 | **denoise**      | -                  | Enable/Disable noise suppression (true/false).              |
 | **greeting**     | -                  | Initial greeting message.                                   |

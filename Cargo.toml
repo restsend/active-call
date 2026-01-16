@@ -1,6 +1,6 @@
 [package]
 name = "active-call"
-version = "0.3.21"
+version = "0.3.22"
 edition = "2024"
 authors = ["jinti<shenjindi@fourz.cn>"]
 description = "A SIP/WebRTC voice agent"
@@ -18,7 +18,7 @@ not_vad = []
 [dependencies]
 opusic-sys = { version = "0.5.8", optional = true }
 audio-codec = { version = "0.3.30", features = ["opus"] }
-rustrtc = "0.3.1"
+rustrtc = "0.3.2"
 #rustrtc = { path = "../rustrtc" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.148"
@@ -80,7 +80,7 @@ realfft = "3.3"
 rmp3 = "0.3"
 tempfile = "3.24.0"
 # Workaround for cross-compilation - generate bindings at compile time
-aws-lc-rs = { version = "1", features = ["bindgen"] }
+#aws-lc-rs = { version = "1", features = ["bindgen"] }
 
 [dev-dependencies]
 tempfile = "3.23.0"

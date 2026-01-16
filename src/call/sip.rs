@@ -87,6 +87,7 @@ pub(super) struct InviteDialogStates {
     pub call_state: ActiveCallStateRef,
     pub media_stream: Arc<MediaStream>,
     pub terminated_reason: Option<TerminatedReason>,
+    pub has_early_media: bool,
 }
 
 impl InviteDialogStates {
@@ -173,7 +174,8 @@ impl DialogStateReceiverGuard {
                     let code = resp.status_code.code();
                     let body = resp.body();
                     let answer = String::from_utf8_lossy(body);
-                    info!(session_id=states.session_id, %dialog_id,  "dialog earlyanswer: \n{}", answer);
+                    let has_sdp = !answer.is_empty();
+                    info!(session_id=states.session_id, %dialog_id, has_sdp=%has_sdp, "dialog early ({}): \n{}", code, answer);
 
                     {
                         let mut cs = states.call_state.write().await;
@@ -194,20 +196,20 @@ impl DialogStateReceiverGuard {
                         .send(crate::event::SessionEvent::Ringing {
                             track_id: states.track_id.clone(),
                             timestamp: crate::media::get_timestamp(),
-                            early_media: !answer.is_empty(),
+                            early_media: has_sdp,
                             refer: Some(refer),
                         })?;
 
-                    if answer.is_empty() {
-                        continue;
+                    if has_sdp {
+                        states.has_early_media = true;
+                        states
+                            .media_stream
+                            .update_remote_description(&states.track_id, &answer.to_string())
+                            .await?;
                     }
-                    states
-                        .media_stream
-                        .update_remote_description(&states.track_id, &answer.to_string())
-                        .await?;
                 }
                 DialogState::Confirmed(dialog_id, msg) => {
-                    info!(session_id=states.session_id, %dialog_id, "dialog confirmed");
+                    info!(session_id=states.session_id, %dialog_id, has_early_media=%states.has_early_media, "dialog confirmed");
                     {
                         let mut cs = states.call_state.write().await;
                         cs.session_id = dialog_id.to_string();
@@ -218,6 +220,12 @@ impl DialogStateReceiverGuard {
                         let answer = String::from_utf8_lossy(msg.body());
                         let answer = answer.trim();
                         if !answer.is_empty() {
+                            if states.has_early_media {
+                                info!(
+                                    session_id = states.session_id,
+                                    "updating remote description with final answer after early media"
+                                );
+                            }
                             if let Err(e) = states
                                 .media_stream
                                 .update_remote_description(&states.track_id, &answer.to_string())

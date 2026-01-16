@@ -704,7 +704,13 @@
             const data = await res.json(); startSipCall(data.session_id, callee);
         };
 
-        document.getElementById('hangup-btn').onclick = () => { if (ws) ws.close(); if (pc) pc.close(); };
+        document.getElementById('hangup-btn').onclick = () => {
+            if (ws) {
+                ws.send(JSON.stringify({ command: 'hangup' }));
+                ws.close();
+            }
+            if (pc) pc.close();
+        };
 
         async function startSipCall(sessionId, callee) {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

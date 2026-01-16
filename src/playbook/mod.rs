@@ -46,6 +46,14 @@ pub struct PlaybookConfig {
     pub dtmf: Option<HashMap<String, DtmfAction>>,
     pub realtime: Option<RealtimeOption>,
     pub posthook: Option<PostHookConfig>,
+    pub follow_up: Option<FollowUpConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowUpConfig {
+    pub timeout: u64,
+    pub max_count: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -116,6 +124,7 @@ pub struct Scene {
     pub prompt: String,
     pub dtmf: Option<HashMap<String, DtmfAction>>,
     pub play: Option<String>,
+    pub follow_up: Option<FollowUpConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,10 +174,12 @@ impl Playbook {
         let dtmf_regex =
             regex::Regex::new(r#"<dtmf\s+digit="([^"]+)"\s+action="([^"]+)"(?:\s+scene="([^"]+)")?(?:\s+target="([^"]+)")?\s*/>"#).unwrap();
         let play_regex = regex::Regex::new(r#"<play\s+file="([^"]+)"\s*/>"#).unwrap();
+        let followup_regex = regex::Regex::new(r#"<followup\s+timeout="(\d+)"\s+max="(\d+)"\s*/>"#).unwrap();
 
         let parse_scene = |id: String, content: String| -> Scene {
             let mut dtmf_map = HashMap::new();
             let mut play = None;
+            let mut follow_up = None;
             let mut final_content = content.clone();
 
             for cap in dtmf_regex.captures_iter(&content) {
@@ -200,9 +211,16 @@ impl Playbook {
                 play = Some(cap.get(1).unwrap().as_str().to_string());
             }
 
+            if let Some(cap) = followup_regex.captures(&content) {
+                let timeout = cap.get(1).unwrap().as_str().parse().unwrap_or(0);
+                let max_count = cap.get(2).unwrap().as_str().parse().unwrap_or(0);
+                follow_up = Some(FollowUpConfig { timeout, max_count });
+            }
+
             // Remove dtmf and play tags from the content
             final_content = dtmf_regex.replace_all(&final_content, "").to_string();
             final_content = play_regex.replace_all(&final_content, "").to_string();
+            final_content = followup_regex.replace_all(&final_content, "").to_string();
             final_content = final_content.trim().to_string();
 
             Scene {
@@ -214,6 +232,7 @@ impl Playbook {
                     Some(dtmf_map)
                 },
                 play,
+                follow_up,
             }
         };
 

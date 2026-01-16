@@ -1610,6 +1610,27 @@ impl ActiveCall {
 
         invite_option.offer = offer.clone().map(|s| s.into());
 
+        // Set contact to local SIP endpoint address if not already set explicitly
+        // Check if contact is still default (no scheme set) or if host is localhost-like
+        let needs_contact = invite_option.contact.scheme.is_none()
+            || invite_option
+                .contact
+                .host_with_port
+                .to_string()
+                .starts_with("127.0.0.1");
+
+        if needs_contact {
+            if let Some(addr) = self.invitation.dialog_layer.endpoint.get_addrs().first() {
+                invite_option.contact = rsip::Uri {
+                    scheme: Some(rsip::Scheme::Sip),
+                    auth: None,
+                    host_with_port: addr.addr.clone(),
+                    params: vec![],
+                    headers: vec![],
+                };
+            }
+        }
+
         let mut rtp_track_to_setup = Some(Box::new(rtp_track) as Box<dyn Track>);
 
         if let Some(moh) = moh {
@@ -1666,6 +1687,7 @@ impl ActiveCall {
             call_state: call_state_ref.clone(),
             cancel_token,
             terminated_reason: None,
+            has_early_media: false,
         };
 
         let mut client_dialog_handler =
@@ -1788,6 +1810,7 @@ impl ActiveCall {
             call_state: self.call_state.clone(),
             cancel_token,
             terminated_reason: None,
+            has_early_media: false,
         };
 
         let initial_request = pending_dialog.dialog.initial_request();
