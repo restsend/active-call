@@ -2,13 +2,13 @@ use super::{SynthesisClient, SynthesisOption, SynthesisType};
 use crate::synthesis::{Subtitle, SynthesisEvent};
 use anyhow::Result;
 use async_trait::async_trait;
+use aws_lc_rs::hmac;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use chrono::Duration;
 use futures::{
     SinkExt, Stream, StreamExt, future,
     stream::{self, BoxStream, SplitSink},
 };
-use ring::hmac;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::{

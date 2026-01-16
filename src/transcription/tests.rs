@@ -8,7 +8,7 @@ use crate::{
 };
 use dotenvy::dotenv;
 use once_cell::sync::OnceCell;
-use rustls::crypto::ring::default_provider;
+use rustls::crypto::aws_lc_rs::default_provider;
 use std::{collections::HashMap, env};
 use tokio::time::{Duration, timeout};
 

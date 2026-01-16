@@ -14,6 +14,7 @@ categories = ["network-programming", "multimedia"]
 opus = ["dep:opusic-sys"]
 default = ["opus"]
 not_vad = []
+aws-lc-bindgen = ["aws-lc-rs/bindgen"]
 
 [dependencies]
 opusic-sys = { version = "0.5.8", optional = true }
@@ -30,7 +31,7 @@ axum = { version = "0.8.7", features = ["ws", "tokio", "multipart"] }
 tower-http = { version = "0.6.2", features = ["fs", "trace"] }
 bytes = "1"
 futures = "0.3.31"
-rustls = { version = "0.23.36", features = ["ring"] }
+rustls = "0.23.36"
 dotenvy = "0.15.7"
 clap = { version = "4.5.54", features = ["derive"] }
 chrono = { version = "0.4.42", features = ["serde"] }
@@ -71,7 +72,6 @@ nnnoiseless = "0.5.2"
 hound = "3.5.1"
 get_if_addrs = "0.5.3"
 http = "1.4.0"
-ring = "0.17.14"
 urlencoding = "2.1.3"
 base64 = "0.22.1"
 url = "2.5.8"
@@ -80,7 +80,7 @@ realfft = "3.3"
 rmp3 = "0.3"
 tempfile = "3.24.0"
 # Workaround for cross-compilation - generate bindings at compile time
-aws-lc-rs = { version = "1", features = ["bindgen"] }
+aws-lc-rs = "1"
 
 [dev-dependencies]
 tempfile = "3.23.0"

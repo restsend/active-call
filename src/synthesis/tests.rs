@@ -153,7 +153,8 @@ fn get_deepgram_credentials() -> Option<String> {
 #[tokio::test]
 async fn test_tencent_cloud_tts() {
     // Initialize crypto provider
-    rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider()).ok();
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+        .ok();
 
     let (secret_id, secret_key, app_id) = match get_tencent_credentials() {
         Some(creds) => creds,
@@ -194,7 +195,8 @@ async fn test_tencent_cloud_tts() {
 #[tokio::test]
 async fn test_aliyun_tts() {
     // Initialize crypto provider
-    rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider()).ok();
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+        .ok();
 
     let api_key = match get_aliyun_credentials() {
         Some(key) => key,
@@ -227,7 +229,8 @@ async fn test_aliyun_tts() {
 
 #[tokio::test]
 async fn test_deepgram_tts() {
-    rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider()).ok();
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+        .ok();
 
     let api_key = match get_deepgram_credentials() {
         Some(key) => key,

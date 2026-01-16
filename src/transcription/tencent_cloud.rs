@@ -6,12 +6,12 @@ use crate::transcription::{
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use audio_codec::{Sample, samples_to_bytes};
+use aws_lc_rs::hmac;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use chrono;
 use futures::{SinkExt, StreamExt};
 use http::{Request, StatusCode, Uri};
 use rand::random;
-use ring::hmac;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;

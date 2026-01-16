@@ -2,6 +2,7 @@ use super::{SynthesisClient, SynthesisOption, SynthesisType};
 use crate::synthesis::{SynthesisEvent, tencent_cloud::TencentSubtitle};
 use anyhow::Result;
 use async_trait::async_trait;
+use aws_lc_rs::hmac;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use bytes::Bytes;
 use futures::{
@@ -9,7 +10,6 @@ use futures::{
     stream::{self, BoxStream},
 };
 use rand::Rng;
-use ring::hmac;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
