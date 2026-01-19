@@ -2,12 +2,17 @@
 asr:
   provider: "aliyun"
   #modelType: "fun-asr-2025-11-07"
+  ## see `TranscriptionOption` options
 llm:
   provider: "aliyun"
   model: "glm-4.7"
+  # model: `env OPENAI_MODEL`
+  # baseUrl: `env OPENAI_BASE_URL`
+  # apiKey: `env OPENAI_API_KEY`
 tts:
   provider: "aliyun"
   #model: "qwen3-tts-flash-2025-11-27"
+  ## see `SynthesisOption` options
 vad:
   provider: "silero"
 denoise: true

@@ -33,6 +33,7 @@ RUN mkdir -p /app/config/mediacache /app/config/cdr /app/config/recorders /app/s
 ARG TARGETARCH
 COPY bin/${TARGETARCH}/active-call /app/active-call
 COPY ./static /app/static
+COPY ./features /app/features
 
 # Set ownership
 RUN chown -R activeuser:activeuser /app

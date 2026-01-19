@@ -15,6 +15,10 @@ App make a webrtc connection via RustPBX
 
 For detailed API documentation, see [API Documentation](./api.md).
 
+# Playbook Guide
+
+For detailed Playbook configuration and usage, see [Playbook Tutorial (ZH)](./playbook_tutorial.zh.md) or [Playbook Tutorial (EN)](./playbook_tutorial.en.md).
+
 # About
 
 - [VoiceAgent Integration with Telephony Networks](how%20webrtc%20work%20with%20sip(en).md)

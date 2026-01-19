@@ -258,6 +258,13 @@ pub enum ToolInvocation {
         reason: Option<String>,
         code: Option<u32>,
     },
+    #[serde(rename_all = "camelCase")]
+    Http {
+        url: String,
+        method: Option<String>,
+        body: Option<serde_json::Value>,
+        headers: Option<HashMap<String, String>>,
+    },
 }
 
 pub struct LlmHandler {
@@ -278,6 +285,7 @@ pub struct LlmHandler {
     call: Option<crate::call::ActiveCallRef>,
     scenes: HashMap<String, super::Scene>,
     current_scene_id: Option<String>,
+    client: Client,
 }
 
 impl LlmHandler {
@@ -337,6 +345,7 @@ impl LlmHandler {
             call: None,
             scenes,
             current_scene_id: initial_scene_id,
+            client: Client::new(),
         }
     }
 
@@ -372,14 +381,18 @@ impl LlmHandler {
             - To transfer the call, output: <refer to=\"sip:xxxx\"/>\n\
             - To play an audio file, output: <play file=\"path/to/file.wav\"/>\n\
             - To switch to another scene, output: <goto scene=\"scene_id\"/>\n\
-            Please use these XML tags for action triggers. They are optimized for streaming playback. \
+            - To call an external HTTP API, output JSON:\n\
+              ```json\n\
+              {{ \"tools\": [{{ \"name\": \"http\", \"url\": \"...\", \"method\": \"POST\", \"body\": {{ ... }} }}] }}\n\
+              ```\n\
+            Please use XML tags for simple actions and JSON blocks for tool calls. \
             Output your response in short sentences. Each sentence will be played as soon as it is finished.",
             base_prompt, features_section
         )
     }
 
     fn load_feature_snippet(feature: &str, lang: &str) -> Result<String> {
-        let path = format!("config/playbook/features/{}.{}.md", feature, lang);
+        let path = format!("features/{}.{}.md", feature, lang);
         let content = std::fs::read_to_string(path)?;
         Ok(content.trim().to_string())
     }
@@ -1008,6 +1021,60 @@ impl LlmHandler {
                                         .unwrap_or_else(|| "Rejected by agent".to_string()),
                                     code,
                                 });
+                            }
+                            ToolInvocation::Http {
+                                ref url,
+                                ref method,
+                                ref body,
+                                ref headers,
+                            } => {
+                                let method_str = method.as_deref().unwrap_or("GET").to_uppercase();
+                                let method = reqwest::Method::from_bytes(method_str.as_bytes())
+                                    .unwrap_or(reqwest::Method::GET);
+
+                                // Send debug event
+                                self.send_debug_event(
+                                    "tool_invocation",
+                                    json!({
+                                        "tool": "Http",
+                                        "params": {
+                                            "url": url,
+                                            "method": method_str,
+                                        }
+                                    }),
+                                );
+
+                                let mut req = self.client.request(method, url);
+                                if let Some(body) = body {
+                                    req = req.json(body);
+                                }
+                                if let Some(headers) = headers {
+                                    for (k, v) in headers {
+                                        req = req.header(k, v);
+                                    }
+                                }
+
+                                match req.send().await {
+                                    Ok(res) => {
+                                        let status = res.status();
+                                        let text = res.text().await.unwrap_or_default();
+                                        self.history.push(ChatMessage {
+                                            role: "system".to_string(),
+                                            content: format!(
+                                                "HTTP tool response ({}): {}",
+                                                status, text
+                                            ),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        warn!("HTTP tool failed: {}", e);
+                                        self.history.push(ChatMessage {
+                                            role: "system".to_string(),
+                                            content: format!("HTTP tool failed: {}", e),
+                                        });
+                                    }
+                                }
+                                rerun_for_rag = true;
                             }
                         }
                     }
