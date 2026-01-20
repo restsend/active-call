@@ -15,7 +15,7 @@ use crate::{
 
 use crate::media::{cache::set_cache_dir, engine::StreamEngine};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use humantime::parse_duration;
 use rsip::prelude::HeadersExt;
 use rsipstack::transaction::{
@@ -51,6 +51,7 @@ pub struct AppStateInner {
     pub active_calls: Arc<std::sync::Mutex<HashMap<String, ActiveCallRef>>>,
     pub total_calls: AtomicU64,
     pub total_failed_calls: AtomicU64,
+    pub uptime: DateTime<Local>,
 }
 
 pub type AppState = Arc<AppStateInner>;
@@ -62,7 +63,6 @@ pub struct AppStateBuilder {
     pub callrecord_formatter: Option<Arc<dyn CallRecordFormatter>>,
     pub cancel_token: Option<CancellationToken>,
     pub create_invitation_handler: Option<FnCreateInvitationHandler>,
-    pub config_loaded_at: Option<DateTime<Utc>>,
     pub config_path: Option<String>,
 
     pub message_inspector: Option<Box<dyn MessageInspector>>,
@@ -499,7 +499,6 @@ impl AppStateBuilder {
             callrecord_formatter: None,
             cancel_token: None,
             create_invitation_handler: None,
-            config_loaded_at: None,
             config_path: None,
             message_inspector: None,
             target_locator: None,
@@ -509,9 +508,6 @@ impl AppStateBuilder {
 
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
-        if self.config_loaded_at.is_none() {
-            self.config_loaded_at = Some(Utc::now());
-        }
         self
     }
 
@@ -530,9 +526,8 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_config_metadata(mut self, path: Option<String>, loaded_at: DateTime<Utc>) -> Self {
+    pub fn with_config_metadata(mut self, path: Option<String>) -> Self {
         self.config_path = path;
-        self.config_loaded_at = Some(loaded_at);
         self
     }
 
@@ -656,6 +651,7 @@ impl AppStateBuilder {
             active_calls: Arc::new(std::sync::Mutex::new(HashMap::new())),
             total_calls: AtomicU64::new(0),
             total_failed_calls: AtomicU64::new(0),
+            uptime: Local::now(),
         });
 
         Ok(app_state)

@@ -70,6 +70,7 @@ pub struct RtcTrack {
     next_rtp_sequence_number: u16,
     last_packet_time: Option<Instant>,
     last_remote_sdp: Option<String>,
+    need_marker: bool,
 }
 
 impl RtcTrack {
@@ -96,6 +97,7 @@ impl RtcTrack {
             next_rtp_sequence_number: 0,
             last_packet_time: None,
             last_remote_sdp: None,
+            need_marker: false,
         }
     }
 
@@ -128,6 +130,9 @@ impl RtcTrack {
         }
 
         let mut config = RtcConfiguration::default();
+        if self.ssrc != 0 {
+            config.ssrc_start = self.ssrc;
+        }
         config.transport_mode = self.rtc_config.mode.clone();
 
         if let Some(ice_servers) = &self.rtc_config.ice_servers {
@@ -423,15 +428,10 @@ impl RtcTrack {
         Ok(())
     }
 
-    /// Normalize SDP for comparison by removing session-specific fields
     fn normalize_sdp(sdp: &str) -> String {
         sdp.lines()
             .map(|line| {
-                // For origin line (o=), only keep session id and version for comparison
-                // Format: o=<username> <sess-id> <sess-version> <nettype> <addrtype> <unicast-address>
-                // Session version increment indicates session changes (RFC 4566)
                 if line.starts_with("o=") {
-                    // Extract session id and version (2nd and 3rd fields)
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if parts.len() >= 3 {
                         return format!("o= {} {}", parts[1], parts[2]);
@@ -440,7 +440,6 @@ impl RtcTrack {
                 line.to_string()
             })
             .filter(|line| {
-                // Filter out lines that can change between identical sessions
                 !line.starts_with("t=") &&  // timing line can vary
                 !line.starts_with("a=ssrc:") &&  // SSRC attributes (but SSRC change shows in o= version)
                 !line.starts_with("a=msid:") &&  // media stream ID
@@ -450,14 +449,21 @@ impl RtcTrack {
             .join("\n")
     }
 
-    async fn update_remote_description_internal(&mut self, answer: &String) -> Result<()> {
+    async fn update_remote_description_internal(
+        &mut self,
+        answer: &String,
+        force_update: bool,
+    ) -> Result<()> {
         if let Some(pc) = &self.peer_connection {
-            // Check if SDP is the same as the last one we set
-            if let Some(ref last_sdp) = self.last_remote_sdp {
-                if Self::normalize_sdp(last_sdp) == Self::normalize_sdp(answer) {
-                    debug!(track_id=%self.track_id, "SDP unchanged, skipping update_remote_description");
-                    return Ok(());
+            if !force_update {
+                if let Some(ref last_sdp) = self.last_remote_sdp {
+                    if Self::normalize_sdp(last_sdp) == Self::normalize_sdp(answer) {
+                        debug!(track_id=%self.track_id, "SDP unchanged, skipping update_remote_description");
+                        return Ok(());
+                    }
                 }
+            } else {
+                debug!(track_id=%self.track_id, "Force update requested, skipping SDP comparison");
             }
 
             let is_first_remote_sdp = self.last_remote_sdp.is_none();
@@ -471,12 +477,25 @@ impl RtcTrack {
                 Err(e) => {
                     if self.rtc_config.mode == TransportMode::Rtp {
                         info!(track_id=%self.track_id, "set_remote_description failed ({}), attempting to re-sync state for SIP update", e);
-                        // SIP 200 OK often sends a final answer after 183 Session Progress early answer.
-                        // WebRTC PeerConnection state machine requires:
-                        //   - stable -> setLocalDescription(offer) -> have-local-offer -> setRemoteDescription(answer) -> stable
-                        // After 183 with SDP, we're in stable state. We can't accept another answer (200 OK).
-                        // Solution: Create a new offer to transition to have-local-offer, then accept the answer.
+
+                        if let Some(current_local) = pc.local_description() {
+                            let sdp = current_local.to_sdp_string();
+                            for line in sdp.lines() {
+                                if line.starts_with("a=ssrc:") {
+                                    info!(track_id=%self.track_id, "SSRC before re-sync: {}", line);
+                                }
+                            }
+                        }
+
                         let offer = pc.create_offer().await?;
+
+                        let sdp = offer.to_sdp_string();
+                        for line in sdp.lines() {
+                            if line.starts_with("a=ssrc:") {
+                                info!(track_id=%self.track_id, "SSRC in new offer (re-sync): {}", line);
+                            }
+                        }
+
                         pc.set_local_description(offer)?;
                         pc.set_remote_description(sdp_obj).await?;
                         self.last_remote_sdp = Some(answer.clone());
@@ -487,10 +506,6 @@ impl RtcTrack {
                 }
             }
 
-            // CRITICAL FIX: When server initiates offer (common in SIP->WebRTC),
-            // Track events only fire when processing remote *offers*, not answers.
-            // Since we send offer and receive answer, we must manually start receiver tracks.
-            // Only do this on the first remote SDP (not on re-invites) and for WebRTC mode.
             if is_first_remote_sdp && self.rtc_config.mode != TransportMode::Rtp {
                 for transceiver in pc.get_transceivers() {
                     if let Some(receiver) = transceiver.receiver() {
@@ -591,7 +606,11 @@ impl Track for RtcTrack {
     }
 
     async fn update_remote_description(&mut self, answer: &String) -> Result<()> {
-        self.update_remote_description_internal(answer).await
+        self.update_remote_description_internal(answer, false).await
+    }
+
+    async fn update_remote_description_force(&mut self, answer: &String) -> Result<()> {
+        self.update_remote_description_internal(answer, true).await
     }
 
     async fn start(
@@ -649,6 +668,7 @@ impl Track for RtcTrack {
                                 let gap_increment =
                                     (elapsed.as_millis() as u32 * clock_rate) / 1000;
                                 self.next_rtp_timestamp += gap_increment;
+                                self.need_marker = true;
                             }
                         }
 
@@ -663,12 +683,19 @@ impl Track for RtcTrack {
                         let sequence_number = self.next_rtp_sequence_number;
                         self.next_rtp_sequence_number += 1;
 
+                        let mut marker = false;
+                        if self.need_marker {
+                            marker = true;
+                            self.need_marker = false;
+                        }
+
                         let frame = RtcAudioFrame {
                             data: Bytes::from(encoded),
                             clock_rate,
                             payload_type: Some(payload_type),
                             sequence_number: Some(sequence_number),
                             rtp_timestamp,
+                            marker,
                         };
                         source.send_audio(frame).await.ok();
                     }
@@ -690,6 +717,7 @@ impl Track for RtcTrack {
                         if elapsed.as_millis() > 50 {
                             let gap_increment = (elapsed.as_millis() as u32 * clock_rate) / 1000;
                             self.next_rtp_timestamp += gap_increment;
+                            self.need_marker = true;
                         }
                     }
                     self.last_packet_time = Some(now);
@@ -705,12 +733,19 @@ impl Track for RtcTrack {
                     self.next_rtp_timestamp += increment;
                     let sequence_number = *sequence_number;
 
+                    let mut marker = false;
+                    if self.need_marker {
+                        marker = true;
+                        self.need_marker = false;
+                    }
+
                     let frame = RtcAudioFrame {
                         data: Bytes::from(payload.clone()),
                         clock_rate,
                         payload_type: Some(*payload_type),
                         sequence_number: Some(sequence_number),
                         rtp_timestamp,
+                        marker,
                     };
                     source.send_audio(frame).await.ok();
                 }

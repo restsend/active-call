@@ -161,6 +161,17 @@ impl MediaStream {
         }
         Ok(())
     }
+
+    pub async fn update_remote_description_force(
+        &self,
+        track_id: &TrackId,
+        answer: &String,
+    ) -> Result<()> {
+        if let Some((track, _)) = self.tracks.lock().await.get_mut(track_id) {
+            track.update_remote_description_force(answer).await?;
+        }
+        Ok(())
+    }
     pub async fn update_track(&self, mut track: Box<dyn Track>, play_id: Option<String>) {
         self.remove_track(track.id(), false).await;
         if self.recorder_option.lock().await.is_some() {

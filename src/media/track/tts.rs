@@ -141,8 +141,8 @@ impl TtsTask {
         let mut ptimer = tokio::time::interval(self.ptime);
         // samples buffer, emit all even if it was not fully filled
         let mut samples = vec![0u8; capacity];
-        // quit if cmd is finished, tts is finished and all the chunks are emitted
-        while !cmd_finished || !tts_finished || !self.emit_q.is_empty() {
+        // loop until cancelled
+        loop {
             tokio::select! {
                 biased;
                 _ = self.cancel_token.cancelled(), if !cancel_received => {

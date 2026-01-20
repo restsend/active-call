@@ -223,19 +223,39 @@ impl DialogStateReceiverGuard {
                             if states.has_early_media {
                                 info!(
                                     session_id = states.session_id,
-                                    "updating remote description with final answer after early media"
+                                    "updating remote description with final answer after early media (force=true)"
                                 );
-                            }
-                            if let Err(e) = states
-                                .media_stream
-                                .update_remote_description(&states.track_id, &answer.to_string())
-                                .await
-                            {
-                                tracing::warn!(
-                                    session_id = states.session_id,
-                                    "failed to update remote description on confirmed: {}",
-                                    e
-                                );
+                                // Force update when transitioning from early media (183) to confirmed (200 OK)
+                                // This ensures media parameters are properly updated even if SDP appears similar
+                                if let Err(e) = states
+                                    .media_stream
+                                    .update_remote_description_force(
+                                        &states.track_id,
+                                        &answer.to_string(),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        session_id = states.session_id,
+                                        "failed to force update remote description on confirmed: {}",
+                                        e
+                                    );
+                                }
+                            } else {
+                                if let Err(e) = states
+                                    .media_stream
+                                    .update_remote_description(
+                                        &states.track_id,
+                                        &answer.to_string(),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        session_id = states.session_id,
+                                        "failed to update remote description on confirmed: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                     }

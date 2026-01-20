@@ -70,6 +70,10 @@ pub trait Track: Send + Sync {
     }
     async fn handshake(&mut self, offer: String, timeout: Option<Duration>) -> Result<String>;
     async fn update_remote_description(&mut self, answer: &String) -> Result<()>;
+    async fn update_remote_description_force(&mut self, answer: &String) -> Result<()> {
+        // Default implementation: force update is same as regular update for most tracks
+        self.update_remote_description(answer).await
+    }
     async fn start(
         &mut self,
         event_sender: EventSender,

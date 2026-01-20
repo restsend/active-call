@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
     let app_state = AppStateBuilder::new()
         .with_config(config.clone())
         .with_stream_engine(stream_engine)
-        .with_config_metadata(config_path, chrono::Utc::now())
+        .with_config_metadata(config_path)
         .build()
         .await?;
 
