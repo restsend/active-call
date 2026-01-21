@@ -68,6 +68,67 @@ pub fn prefer_audio_codec(sdp: &SessionDescription) -> Option<CodecType> {
         .cloned()
 }
 
+pub fn intersect_answer(offer: &SessionDescription, answer: &mut SessionDescription) {
+    let offer_media = if let Some(m) = select_peer_media(offer, "audio") {
+        m
+    } else {
+        return;
+    };
+
+    for media in answer.media_sections.iter_mut() {
+        if media.kind == MediaKind::Audio {
+            // 1. Build map of Answer PT -> CodecType
+            let mut answer_pt_codec = std::collections::HashMap::new();
+
+            for attr in &media.attributes {
+                if attr.key == "rtpmap" {
+                    if let Some(val) = &attr.value {
+                        if let Ok((pt, codec, _, _)) = parse_rtpmap(val) {
+                            answer_pt_codec.insert(pt, codec);
+                        }
+                    }
+                }
+            }
+
+            // 2. Filter formats
+            let mut new_formats = Vec::new();
+            for fmt in &media.formats {
+                if let Ok(pt) = fmt.parse::<u8>() {
+                    let codec = if let Some(c) = answer_pt_codec.get(&pt) {
+                        Some(*c)
+                    } else {
+                        CodecType::try_from(pt).ok()
+                    };
+
+                    if let Some(c) = codec {
+                        if offer_media.codecs.contains(&c) {
+                            new_formats.push(fmt.clone());
+                        }
+                    }
+                }
+            }
+
+            // Ensure we don't leave an empty list if there was a matching codec but something went wrong.
+            // But if intersection is empty, it's empty.
+            media.formats = new_formats;
+
+            // 3. Clean attributes
+            media.attributes.retain(|attr| {
+                if attr.key == "rtpmap" || attr.key == "fmtp" || attr.key == "rtcp-fb" {
+                    if let Some(val) = &attr.value {
+                        if let Some(first_word) = val.split_whitespace().next() {
+                            // This checks if the attribute refers to a PT that is still in media.formats
+                            return media.formats.iter().any(|f| f == first_word);
+                        }
+                    }
+                    return false;
+                }
+                true
+            });
+        }
+    }
+}
+
 pub fn select_peer_media(sdp: &SessionDescription, media_type: &str) -> Option<PeerMedia> {
     let mut peer_media = PeerMedia {
         rtp_addr: String::new(),
@@ -208,5 +269,59 @@ a=ptime:20"#;
 
         let codec = prefer_audio_codec(&offer_sdp);
         assert_eq!(codec, Some(CodecType::PCMU));
+    }
+
+    #[test]
+    fn test_answer_intersection() {
+        use crate::media::negotiate::intersect_answer;
+        // Offer with only PCMU (0) and telephone-event (101)
+        let offer_str = r#"v=0
+o=- 123 123 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9000 RTP/AVP 0 101
+c=IN IP4 127.0.0.1
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+"#;
+        let offer = SessionDescription::parse(rustrtc::sdp::SdpType::Offer, offer_str).unwrap();
+
+        // Answer with PCMA (8), PCMU (0), G722 (9)
+        let answer_str = r#"v=0
+o=- 456 456 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9000 RTP/AVP 8 0 9 101
+c=IN IP4 127.0.0.1
+a=rtpmap:8 PCMA/8000
+a=rtpmap:0 PCMU/8000
+a=rtpmap:9 G722/8000
+a=rtpmap:101 telephone-event/8000
+"#;
+        let mut answer =
+            SessionDescription::parse(rustrtc::sdp::SdpType::Answer, answer_str).unwrap();
+
+        intersect_answer(&offer, &mut answer);
+
+        // Verification
+        let media = &answer.media_sections[0];
+
+        // formats should only contain 0 and 101
+        assert!(media.formats.contains(&"0".to_string()));
+        assert!(media.formats.contains(&"101".to_string()));
+        assert!(!media.formats.contains(&"8".to_string())); // PCMA should be removed
+        assert!(!media.formats.contains(&"9".to_string())); // G722 should be removed
+
+        // attributes check
+        let rtpmap_values: Vec<&String> = media
+            .attributes
+            .iter()
+            .filter(|a| a.key == "rtpmap")
+            .filter_map(|a| a.value.as_ref())
+            .collect();
+
+        assert!(rtpmap_values.iter().any(|v| v.contains("PCMU/8000")));
+        assert!(!rtpmap_values.iter().any(|v| v.contains("PCMA/8000")));
+        assert!(!rtpmap_values.iter().any(|v| v.contains("G722/8000")));
     }
 }

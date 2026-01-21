@@ -560,7 +560,7 @@ impl Track for RtcTrack {
         }
 
         let sdp = rustrtc::SessionDescription::parse(rustrtc::SdpType::Offer, &offer)?;
-        pc.set_remote_description(sdp).await?;
+        pc.set_remote_description(sdp.clone()).await?;
 
         debug!(track_id=%self.track_id, "After set_remote_description: transceivers count = {}", pc.get_transceivers().len());
         for (i, t) in pc.get_transceivers().iter().enumerate() {
@@ -591,7 +591,9 @@ impl Track for RtcTrack {
 
         self.parse_sdp_payload_types(rustrtc::SdpType::Offer, &offer)?;
 
-        let answer = pc.create_answer().await?;
+        let mut answer = pc.create_answer().await?;
+        crate::media::negotiate::intersect_answer(&sdp, &mut answer);
+
         pc.set_local_description(answer.clone())?;
 
         if self.rtc_config.mode != TransportMode::Rtp {
