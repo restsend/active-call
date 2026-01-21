@@ -314,7 +314,7 @@ pub async fn call_handler(
 
         let send_to_ws_loop = async {
             while let Some(event) = event_receiver_from_core.recv().await {
-                debug!(session_id, ?event, "Sending WS message");
+                debug!(session_id, %event, "Sending WS message");
                 let message = match event.into_ws_message() {
                     Ok(msg) => msg,
                     Err(e) => {

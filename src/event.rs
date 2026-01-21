@@ -1,7 +1,7 @@
 use crate::media::PcmBuf;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event")]
@@ -202,6 +202,24 @@ pub enum SessionEvent {
         timestamp: u64,
         payload: Option<String>,
     },
+}
+
+impl Display for SessionEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionEvent::Silence {
+                track_id, duration, ..
+            } => {
+                write!(f, "Silence(track_id={}, duration={})", track_id, duration)
+            }
+            SessionEvent::Binary { track_id, data, .. } => {
+                write!(f, "Silence(track_id={}, data_len={})", track_id, data.len())
+            }
+            _ => {
+                write!(f, "{:?}", self)
+            }
+        }
+    }
 }
 
 pub type EventSender = tokio::sync::broadcast::Sender<SessionEvent>;
