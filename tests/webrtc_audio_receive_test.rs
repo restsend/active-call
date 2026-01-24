@@ -44,23 +44,13 @@ fn create_test_config(http_port: u16, sip_port: u16) -> Config {
         addr: "0.0.0.0".to_string(),
         udp_port: sip_port,
         log_level: Some("debug".to_string()),
-        log_file: None,
         http_access_skip_paths: vec![],
         useragent: Some("WebRTC-Audio-Test".to_string()),
-        register_users: None,
-        graceful_shutdown: None, // Disable graceful shutdown for testing
-        handler: None,           // Will use default playbook handler
         accept_timeout: Some("5s".to_string()),
-        codecs: None,
-        external_ip: None,
         rtp_start_port: Some(40000),
         rtp_end_port: Some(40100),
-        callrecord: None,
         media_cache_path: "./target/tmp_media_test".to_string(),
-        ice_servers: None,
-        recording: None,
-        rewrites: None,
-        ambiance: None,
+        ..Default::default()
     }
 }
 

@@ -23,10 +23,8 @@ fn create_test_config(sip_port: u16, http_port: u16, webhook_port: u16) -> Confi
         addr: "0.0.0.0".to_string(),
         udp_port: sip_port,
         log_level: Some("debug".to_string()),
-        log_file: None,
         http_access_skip_paths: vec![],
         useragent: Some("ActiveCallTest".to_string()),
-        register_users: None,
         graceful_shutdown: Some(true),
         handler: Some(InviteHandlerConfig::Webhook {
             url: Some(format!("http://127.0.0.1:{}/mock-handler", webhook_port)),
@@ -35,16 +33,10 @@ fn create_test_config(sip_port: u16, http_port: u16, webhook_port: u16) -> Confi
             urls: None,
         }),
         accept_timeout: Some("5s".to_string()),
-        codecs: None,
-        external_ip: None,
         rtp_start_port: Some(30000 + (sip_port % 1000) * 20),
         rtp_end_port: Some(30020 + (sip_port % 1000) * 20),
-        callrecord: None,
         media_cache_path: "./target/tmp_media".to_string(),
-        ice_servers: None,
-        recording: None,
-        rewrites: None,
-        ambiance: None,
+        ..Default::default()
     }
 }
 
