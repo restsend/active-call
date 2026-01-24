@@ -1474,6 +1474,29 @@ impl ActiveCall {
                     }
                 }
 
+                // Auto-inject credentials from registered users if not already provided
+                let mut option = option.clone();
+                if option.sip.is_none()
+                    || option
+                        .sip
+                        .as_ref()
+                        .and_then(|s| s.username.as_ref())
+                        .is_none()
+                {
+                    if let Some(callee) = &option.callee {
+                        if let Some(cred) = self.app_state.find_credentials_for_callee(callee) {
+                            if option.sip.is_none() {
+                                option.sip = Some(crate::SipOption {
+                                    username: Some(cred.username.clone()),
+                                    password: Some(cred.password.clone()),
+                                    realm: cred.realm.clone(),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
+
                 let mut invite_option = option.build_invite_option()?;
                 invite_option.call_id = Some(self.session_id.clone());
 

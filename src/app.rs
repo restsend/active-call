@@ -7,9 +7,11 @@ use crate::{
     locator::RewriteTargetLocator,
     useragent::{
         RegisterOption,
-        invitation::FnCreateInvitationHandler,
-        invitation::{PendingDialog, PendingDialogGuard, default_create_invite_handler},
-        registration::RegistrationHandle,
+        invitation::{
+            FnCreateInvitationHandler, PendingDialog, PendingDialogGuard,
+            default_create_invite_handler,
+        },
+        registration::{RegistrationHandle, UserCredential},
     },
 };
 
@@ -379,6 +381,116 @@ impl AppStateInner {
             }
         }
         Ok(count)
+    }
+
+    pub fn find_credentials_for_callee(&self, callee: &str) -> Option<UserCredential> {
+        let callee_uri = callee
+            .strip_prefix("sip:")
+            .or_else(|| callee.strip_prefix("sips:"))
+            .unwrap_or(callee);
+        let callee_uri = if !callee_uri.starts_with("sip:") && !callee_uri.starts_with("sips:") {
+            format!("sip:{}", callee_uri)
+        } else {
+            callee_uri.to_string()
+        };
+
+        let parsed_callee = match rsip::Uri::try_from(callee_uri.as_str()) {
+            Ok(uri) => uri,
+            Err(e) => {
+                warn!("failed to parse callee URI: {} {:?}", callee, e);
+                return None;
+            }
+        };
+
+        let callee_host = match &parsed_callee.host_with_port.host {
+            rsip::Host::Domain(domain) => domain.to_string(),
+            rsip::Host::IpAddr(ip) => return self.find_credentials_by_ip(ip),
+        };
+
+        // Look through registered users to find one matching this domain
+        if let Some(register_users) = &self.config.register_users {
+            for option in register_users.iter() {
+                let mut server = option.server.clone();
+                if !server.starts_with("sip:") && !server.starts_with("sips:") {
+                    server = format!("sip:{}", server);
+                }
+
+                let parsed_server = match rsip::Uri::try_from(server.as_str()) {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        warn!("failed to parse server URI: {} {:?}", option.server, e);
+                        continue;
+                    }
+                };
+
+                let server_host = match &parsed_server.host_with_port.host {
+                    rsip::Host::Domain(domain) => domain.to_string(),
+                    rsip::Host::IpAddr(ip) => {
+                        // Compare IP addresses
+                        if let rsip::Host::IpAddr(callee_ip) = &parsed_callee.host_with_port.host {
+                            if ip == callee_ip {
+                                if let Some(cred) = &option.credential {
+                                    info!(
+                                        callee,
+                                        username = cred.username,
+                                        server = option.server,
+                                        "Auto-injecting credentials from registered user for outbound call (IP match)"
+                                    );
+                                    return Some(cred.clone());
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                };
+
+                if server_host == callee_host {
+                    if let Some(cred) = &option.credential {
+                        info!(
+                            callee,
+                            username = cred.username,
+                            server = option.server,
+                            "Auto-injecting credentials from registered user for outbound call"
+                        );
+                        return Some(cred.clone());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Helper function to find credentials by IP address
+    fn find_credentials_by_ip(
+        &self,
+        callee_ip: &std::net::IpAddr,
+    ) -> Option<crate::useragent::registration::UserCredential> {
+        if let Some(register_users) = &self.config.register_users {
+            for option in register_users.iter() {
+                let mut server = option.server.clone();
+                if !server.starts_with("sip:") && !server.starts_with("sips:") {
+                    server = format!("sip:{}", server);
+                }
+
+                if let Ok(parsed_server) = rsip::Uri::try_from(server.as_str()) {
+                    if let rsip::Host::IpAddr(server_ip) = &parsed_server.host_with_port.host {
+                        if server_ip == callee_ip {
+                            if let Some(cred) = &option.credential {
+                                info!(
+                                    callee_ip = %callee_ip,
+                                    username = cred.username,
+                                    server = option.server,
+                                    "Auto-injecting credentials from registered user for outbound call (IP match)"
+                                );
+                                return Some(cred.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub async fn stop_registration(&self, wait_for_clear: Option<Duration>) -> Result<()> {
