@@ -38,20 +38,20 @@ The **Playbook** system is our recommended way to build complex, stateful voice 
 - **Tool Integration**: Built-in support for DTMF, SIP Refer (Transfer), and custom Function Calling.
 - **Advanced Interaction**: Smart interruptions, filler word filtering, background ambiance, and automated post-call summaries via Webhooks.
 
-### 5. Advanced Context Management (NEW)
+### 4. Advanced Context Management (NEW)
 
 Enhance conversational fluidity with intelligent context handling:
 
 - **Context Repair**: Automatically detects and fixes fragmentation caused by pauses (e.g., users finishing sentences after an interruption).
 - **Rolling Summary**: Manages long conversations by periodically summarizing history to maintain context without hitting token limits.
 
-### 6. High-Performance Media Core
+### 5. High-Performance Media Core
 
 - **Low-Latency VAD**: Includes **TinySilero** (optimized Rust implementation), significantly faster than standard ONNX models.
 - **Flexible Processing Chain**: Easily add noise reduction, echo cancellation, or custom audio processors.
 - **Codec Support**: PCM16, G.711 (PCMU/PCMA), G.722, and Opus.
 
-### 7. Offline AI Capabilities (NEW)
+### 6. Offline AI Capabilities (NEW)
 
 **Privacy-First & Cost-Effective**: Run ASR and TTS locally without cloud APIs
 
@@ -176,6 +176,7 @@ The handler type is automatically detected:
 - Files ending with `.md` become **Playbook handlers** (set as default)
 
 Additional CLI options:
+
 - `--call <SIP_URI>`: Initiate an outgoing SIP call immediately
 - `--external-ip <IP>`: Set external IP address for SIP/RTP
 - `--codecs <CODECS>`: Comma-separated list of supported codecs (pcmu,pcma,g722,g729,opus,telephone_event)
