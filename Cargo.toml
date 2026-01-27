@@ -21,10 +21,10 @@ not_vad = []
 [dependencies]
 opusic-sys = { version = "0.5.8", optional = true }
 audio-codec = { version = "0.3.30", features = ["opus"] }
-rustrtc = "0.3.12"
+rustrtc = "0.3.13"
 #rustrtc = { path = "../rustrtc" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.148"
+serde_json = "1"
 minijinja = { version = "2.6.0", features = ["loader", "json"] }
 anyhow = "1"
 async-trait = "0.1.88"
@@ -36,7 +36,7 @@ futures = "0.3.31"
 rustls = "0.23.36"
 dotenvy = "0.15.7"
 clap = { version = "4.5.54", features = ["derive"] }
-chrono = { version = "0.4.42", features = ["serde"] }
+chrono = { version = "0.4.43", features = ["serde"] }
 tokio = { version = "1.49.0", features = ["full", "tracing"] }
 tokio-stream = { version = "0.1.18", features = ["net", "sync"] }
 tokio-tungstenite = { version = "0.28.0", features = [
@@ -50,7 +50,7 @@ toml = "0.9.8"
 rsip = "0.4.0"
 rsipstack = "0.4.3"
 #rsipstack = { path = "../rsipstack" }
-uuid = { version = "1.19.0", features = ["v4"] }
+uuid = { version = "1.20.0", features = ["v4"] }
 reqwest = { version = "0.13.1", features = [
     "json",
     "stream",
@@ -60,11 +60,11 @@ reqwest = { version = "0.13.1", features = [
     "query",
     "gzip",
 ] }
-object_store = { version = "0.13.0", features = ["aws", "azure", "gcp"] }
+object_store = { version = "0.13.1", features = ["aws", "azure", "gcp"] }
 serde_with = "3.16.1"
 rand = "0.8.5"
 humantime = "2.1.0"
-lru = "0.16.2"
+lru = "0.16.3"
 md5 = { package = "md-5", version = "0.10.6" }
 sha2 = "0.10.9"
 serde_yaml = "0.9.33"

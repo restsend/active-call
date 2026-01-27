@@ -203,8 +203,9 @@ impl TtsTask {
                             let elapsed = first_entry.finish_at.elapsed();
                             // In streaming mode, finish when:
                             // 1. cmd_finished is true (end_of_stream received)
-                            // 2. AND either tts_finished, entry.finished, or 10s timeout
-                            if self.streaming && cmd_finished && (tts_finished || first_entry.finished || elapsed > Duration::from_secs(10)) {
+                            // 2. AND either tts_finished, or 10s timeout
+                            // Note: first_entry.finished is ignored here because some providers emit Finished per sentence
+                            if self.streaming && cmd_finished && (tts_finished || elapsed > Duration::from_secs(10)) {
                                 debug!(
                                     session_id = %self.session_id,
                                     track_id = %self.track_id,

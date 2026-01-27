@@ -11,7 +11,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use audio_codec::CodecType;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use rustrtc::{
     AudioCapability, IceServer, MediaKind, PeerConnection, PeerConnectionEvent,
     PeerConnectionState, RtcConfiguration, RtpCodecParameters, SdpType, TransportMode,
@@ -214,156 +214,198 @@ impl RtcTrack {
     ) {
         let cancel_token = self.cancel_token.clone();
         let packet_sender = self.packet_sender.clone();
-        let pc_clone = pc.clone();
+        let pc_event = pc.clone();
+        let pc_stats = pc.clone();
+        let pc_state = pc.clone();
         let track_id_log = track_id.clone();
         let is_webrtc = self.rtc_config.mode != TransportMode::Rtp;
 
-        // 1. Event Loop
         crate::spawn(async move {
-            info!(track_id=%track_id_log, "RtcTrack event loop started");
-            let mut events = futures::stream::unfold(pc_clone.clone(), |pc| async move {
+            info!(track_id=%track_id_log, "RtcTrack event/stats loop started");
+
+            let mut events = futures::stream::unfold(pc_event, |pc| async move {
                 pc.recv().await.map(|ev| (ev, pc))
             })
-            .take_until(cancel_token.cancelled())
             .boxed();
 
+            let mut state_rx = if is_webrtc {
+                Some(pc_state.subscribe_peer_state())
+            } else {
+                None
+            };
+
+            let mut stats_interval = tokio::time::interval(Duration::from_secs(5));
             let mut event_count = 0;
-            while let Some(event) = events.next().await {
-                event_count += 1;
-                let event_type = match &event {
-                    PeerConnectionEvent::Track(_) => "Track",
-                    PeerConnectionEvent::DataChannel(_) => "DataChannel",
-                };
-                debug!(track_id=%track_id_log, "Received PeerConnectionEvent #{}: {}", event_count, event_type);
+            let mut workers = FuturesUnordered::new();
 
-                if let PeerConnectionEvent::Track(transceiver) = event {
-                    if let Some(receiver) = transceiver.receiver() {
-                        let track = receiver.track();
-                        info!(track_id=%track_id_log, "New track received (SSRC latching complete)");
-
-                        Self::spawn_track_handler(
-                            track,
-                            packet_sender.clone(),
-                            track_id_log.clone(),
-                            cancel_token.clone(),
-                            processor_chain.clone(),
-                            default_payload_type,
-                        );
-                    }
-                }
-            }
-            debug!(track_id=%track_id_log, "RtcTrack event loop ended, total events: {}", event_count);
-        });
-
-        // 2. State Monitoring
-        if is_webrtc {
-            let pc_state = pc.clone();
-            let cancel_token_state = self.cancel_token.clone();
-            let mut state_rx = pc_state.subscribe_peer_state();
-            let track_id_state = track_id.clone();
-
-            crate::spawn(async move {
-                while state_rx.changed().await.is_ok() {
-                    let s = *state_rx.borrow();
-                    debug!(track_id=%track_id_state, "peer connection state changed: {:?}", s);
-                    match s {
-                        PeerConnectionState::Disconnected
-                        | PeerConnectionState::Closed
-                        | PeerConnectionState::Failed => {
-                            info!(
-                                track_id = %track_id_state,
-                                "peer connection is {:?}, try to close", s
-                            );
-                            cancel_token_state.cancel();
-                            pc_state.close();
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            });
-        }
-
-        // 3. Stats Loop
-        let pc_stats = pc.clone();
-        let track_id_stats = track_id.clone();
-        let cancel_token_stats = self.cancel_token.clone();
-        crate::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 tokio::select! {
-                    _ = cancel_token_stats.cancelled() => break,
-                    _ = interval.tick() => {
+                    _ = cancel_token.cancelled() => {
+                        debug!(track_id=%track_id_log, "RtcTrack loop cancelled");
+                        break;
+                    }
+
+                    Some(event) = events.next() => {
+                        event_count += 1;
+                        let event_type = match &event {
+                            PeerConnectionEvent::Track(_) => "Track",
+                            PeerConnectionEvent::DataChannel(_) => "DataChannel",
+                        };
+                        debug!(track_id=%track_id_log, "Received PeerConnectionEvent #{}: {}", event_count, event_type);
+
+                        if let PeerConnectionEvent::Track(transceiver) = event {
+                            if let Some(receiver) = transceiver.receiver() {
+                                let track = receiver.track();
+                                info!(track_id=%track_id_log, "New track received (SSRC latching complete)");
+
+                                let (f1, f2) = Self::create_track_workers(
+                                    track,
+                                    packet_sender.clone(),
+                                    track_id_log.clone(),
+                                    processor_chain.clone(),
+                                    default_payload_type,
+                                );
+                                workers.push(f1);
+                                workers.push(f2);
+                            }
+                        }
+                    }
+
+                    _ = workers.next(), if !workers.is_empty() => {}
+
+                    _ = stats_interval.tick() => {
                         match pc_stats.get_stats().await {
                             Ok(stats) => {
-                                info!(track_id=%track_id_stats, "RTCP Stats: {:?}", stats);
+                                info!(track_id=%track_id_log, %stats, "RTCP Stats");
                             }
                             Err(e) => {
-                                debug!(track_id=%track_id_stats, "Failed to get stats: {:?}", e);
+                                debug!(track_id=%track_id_log, "Failed to get stats: {:?}", e);
+                            }
+                        }
+                    }
+
+                    // Handle State Changes (WebRTC Only)
+                    res = async {
+                        if let Some(rx) = state_rx.as_mut() {
+                            rx.changed().await
+                        } else {
+                            std::future::pending().await
+                        }
+                    } => {
+                        if res.is_ok() {
+                            if let Some(rx) = state_rx.as_ref() {
+                                let s = *rx.borrow();
+                                debug!(track_id=%track_id_log, "peer connection state changed: {:?}", s);
+                                match s {
+                                    PeerConnectionState::Disconnected
+                                    | PeerConnectionState::Closed
+                                    | PeerConnectionState::Failed => {
+                                        info!(
+                                            track_id = %track_id_log,
+                                            "peer connection is {:?}, try to close", s
+                                        );
+                                        cancel_token.cancel();
+                                        pc_state.close();
+                                        break;
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
                     }
                 }
             }
+            debug!(track_id=%track_id_log, "RtcTrack event/stats loop ended, total events: {}", event_count);
         });
     }
 
-    fn spawn_track_handler(
+    fn create_track_workers(
         track: Arc<SampleStreamTrack>,
         packet_sender_arc: Arc<Mutex<Option<TrackPacketSender>>>,
         track_id: TrackId,
-        cancel_token: CancellationToken,
         processor_chain: ProcessorChain,
         default_payload_type: u8,
+    ) -> (
+        std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+        std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     ) {
-        let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<rustrtc::media::frame::AudioFrame>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<rustrtc::media::frame::AudioFrame>();
 
         // Processing Worker
         let track_id_proc = track_id.clone();
         let packet_sender_proc = packet_sender_arc.clone();
-        let mut processor_chain_proc = processor_chain.clone();
-        let cancel_token_proc = cancel_token.clone();
-        crate::spawn(async move {
-            info!(track_id=%track_id_proc, "RtcTrack processing worker started");
-            while let Some(frame) = rx.recv().await {
-                if cancel_token_proc.is_cancelled() {
-                    break;
-                }
-                Self::process_audio_frame(
-                    frame,
-                    &track_id_proc,
-                    &packet_sender_proc,
-                    &mut processor_chain_proc,
-                    default_payload_type,
-                )
-                .await;
-            }
-            info!(track_id=%track_id_proc, "RtcTrack processing worker stopped");
-        });
+        let processor_chain_proc = processor_chain.clone();
+        let proc_fut = Self::run_processing_worker(
+            rx,
+            track_id_proc,
+            packet_sender_proc,
+            processor_chain_proc,
+            default_payload_type,
+        );
 
         // Receiving Worker
         let track_id_recv = track_id.clone();
-        crate::spawn(async move {
-            let mut samples =
-                futures::stream::unfold(
-                    track,
-                    |t| async move { t.recv().await.ok().map(|s| (s, t)) },
-                )
-                .take_until(cancel_token.cancelled())
-                .boxed();
+        let recv_fut = Self::run_receiving_worker(track, tx, track_id_recv);
 
-            while let Some(sample) = samples.next().await {
-                if let rustrtc::media::frame::MediaSample::Audio(frame) = sample {
-                    if let Err(_) = tx.send(frame) {
-                        break;
-                    }
+        (proc_fut.boxed(), recv_fut.boxed())
+    }
+
+    async fn run_processing_worker(
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<rustrtc::media::frame::AudioFrame>,
+        track_id: TrackId,
+        packet_sender: Arc<Mutex<Option<TrackPacketSender>>>,
+        mut processor_chain: ProcessorChain,
+        default_payload_type: u8,
+    ) {
+        info!(track_id=%track_id, "RtcTrack processing worker started");
+        while let Some(frame) = rx.recv().await {
+            let res = std::panic::AssertUnwindSafe(Self::process_audio_frame(
+                frame,
+                &track_id,
+                &packet_sender,
+                &mut processor_chain,
+                default_payload_type,
+            ))
+            .catch_unwind()
+            .await;
+
+            if let Err(cause) = res {
+                let msg = if let Some(s) = cause.downcast_ref::<&str>() {
+                    *s
+                } else if let Some(s) = cause.downcast_ref::<String>() {
+                    &s[..]
                 } else {
-                    debug!(track_id=%track_id_recv, "Received non-audio sample");
-                }
+                    "Unknown panic"
+                };
+                tracing::error!(track_id=%track_id, "RtcTrack processing worker PANIC: {}", msg);
+                break;
             }
-            info!(track_id=%track_id_recv, "RtcTrack receiving worker stopped");
-        });
+        }
+        info!(track_id=%track_id, "RtcTrack processing worker stopped");
+    }
+
+    async fn run_receiving_worker(
+        track: Arc<SampleStreamTrack>,
+        tx: tokio::sync::mpsc::UnboundedSender<rustrtc::media::frame::AudioFrame>,
+        track_id: TrackId,
+    ) {
+        let mut samples =
+            futures::stream::unfold(
+                track,
+                |t| async move { t.recv().await.ok().map(|s| (s, t)) },
+            )
+            .boxed();
+
+        while let Some(sample) = samples.next().await {
+            if let rustrtc::media::frame::MediaSample::Audio(frame) = sample {
+                if let Err(_) = tx.send(frame) {
+                    break;
+                }
+            } else {
+                debug!(track_id=%track_id, "Received non-audio sample");
+            }
+        }
+        info!(track_id=%track_id, "RtcTrack receiving worker stopped");
     }
 
     async fn process_audio_frame(
