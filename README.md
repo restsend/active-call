@@ -77,7 +77,7 @@ mkdir -p $(pwd)/data/models
 # Download all models (SenseVoice & Supertonic)
 docker run --rm \
   -v $(pwd)/data/models:/models \
-  ghcr.io/restsend/active-call:latest \
+  ghcr.io/miuda-ai/active-call:latest \
   --download-models all --models-dir /models \
    --exit-after-download
 ```
@@ -89,7 +89,7 @@ docker run --rm \
 > docker run --rm \
 >   -e HF_ENDPOINT=https://hf-mirror.com \
 >   -v $(pwd)/data/models:/models \
->   ghcr.io/restsend/active-call:latest \
+>   ghcr.io/miuda-ai/active-call:latest \
 >   --download-models all --models-dir /models
 > ```
 
@@ -104,7 +104,7 @@ docker run -d \
   -p 13050:13050/udp \
   -v $(pwd)/data/models:/app/models \
   -v $(pwd)/config:/app/config \
-  ghcr.io/restsend/active-call:latest
+  ghcr.io/miuda-ai/active-call:latest
 ```
 
 #### Configuration
@@ -450,7 +450,7 @@ To speak to a human, I can transfer you: <refer to="sip:human@domain.com" />
 ### Pull the Image
 
 ```bash
-docker pull ghcr.io/restsend/active-call:latest
+docker pull ghcr.io/miuda-ai/active-call:latest
 ```
 
 ### Configuration
@@ -470,7 +470,7 @@ docker run -d \
   -v $(pwd)/config.toml:/app/config.toml:ro \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/models:/app/models \
-  ghcr.io/restsend/active-call:latest
+  ghcr.io/miuda-ai/active-call:latest
 ```
 
 ### CLI Options
@@ -483,7 +483,7 @@ docker run -d \
   --name active-call \
   -p 13050:13050/udp \
   -v $(pwd)/config:/app/config \
-  ghcr.io/restsend/active-call:latest \
+  ghcr.io/miuda-ai/active-call:latest \
   --handler https://api.example.com/webhook
 ```
 

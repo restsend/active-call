@@ -4,7 +4,7 @@
 FROM debian:bookworm-slim
 
 LABEL maintainer="shenjindi@miuda.ai"
-LABEL org.opencontainers.image.source="https://github.com/restsend/active-call"
+LABEL org.opencontainers.image.source="https://github.com/miuda-ai/active-call"
 LABEL org.opencontainers.image.description="A SIP/WebRTC voice agent"
 
 # Set environment variables
