@@ -1,5 +1,6 @@
 use crate::CallOption;
-use crate::call::ActiveCallRef;
+use crate::call::{ActiveCallRef, Command};
+use crate::event::EventReceiver;
 use anyhow::{Result, anyhow};
 use serde_json::json;
 use tracing::{error, info, warn};
@@ -10,6 +11,7 @@ pub struct PlaybookRunner {
     handler: Box<dyn DialogueHandler>,
     call: ActiveCallRef,
     config: PlaybookConfig,
+    event_receiver: EventReceiver,
 }
 
 impl PlaybookRunner {
@@ -18,14 +20,17 @@ impl PlaybookRunner {
         call: ActiveCallRef,
         config: PlaybookConfig,
     ) -> Self {
+        let event_receiver = call.event_sender.subscribe();
         Self {
             handler,
             call,
             config,
+            event_receiver,
         }
     }
 
     pub fn new(playbook: Playbook, call: ActiveCallRef) -> Result<Self> {
+        let event_receiver = call.event_sender.subscribe();
         if let Ok(mut state) = call.call_state.try_write() {
             // Ensure option exists before applying config
             if state.option.is_none() {
@@ -66,6 +71,7 @@ impl PlaybookRunner {
             handler,
             call,
             config: playbook.config,
+            event_receiver,
         })
     }
 
@@ -75,28 +81,42 @@ impl PlaybookRunner {
             self.call.session_id
         );
 
-        let mut event_receiver = self.call.event_sender.subscribe();
+        let mut answered = {
+            let state = self.call.call_state.read().await;
+            state.answer_time.is_some()
+        };
 
         if let Ok(commands) = self.handler.on_start().await {
             for cmd in commands {
+                let is_media = matches!(cmd, Command::Tts { .. } | Command::Play { .. });
+
+                if is_media && !answered {
+                    info!("Waiting for call establishment before executing media command...");
+                    while let Ok(event) = self.event_receiver.recv().await {
+                        match &event {
+                            crate::event::SessionEvent::Answer { .. } => {
+                                info!("Call established, proceeding to execute media command");
+                                answered = true;
+                                break;
+                            }
+                            crate::event::SessionEvent::Hangup { .. } => {
+                                info!("Call hung up before established, stopping");
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 if let Err(e) = self.call.enqueue_command(cmd).await {
                     error!("Failed to enqueue start command: {}", e);
                 }
             }
         }
 
-        // Wait for call to be established before running playbook greeting
-        let mut answered = false;
-        {
-            let state = self.call.call_state.read().await;
-            if state.answer_time.is_some() {
-                answered = true;
-            }
-        }
-
         if !answered {
             info!("Waiting for call establishment...");
-            while let Ok(event) = event_receiver.recv().await {
+            while let Ok(event) = self.event_receiver.recv().await {
                 match &event {
                     crate::event::SessionEvent::Answer { .. } => {
                         info!("Call established, proceeding to playbook handles");
@@ -111,24 +131,20 @@ impl PlaybookRunner {
             }
         }
 
-        while let Ok(event) = event_receiver.recv().await {
-            match &event {
-                crate::event::SessionEvent::AsrFinal { text, .. } => {
-                    info!("User said: {}", text);
-                }
-                crate::event::SessionEvent::Hangup { .. } => {
-                    info!("Call hung up, stopping playbook");
-                    break;
-                }
-                _ => {}
-            }
-
+        while let Ok(event) = self.event_receiver.recv().await {
             if let Ok(commands) = self.handler.on_event(&event).await {
                 for cmd in commands {
                     if let Err(e) = self.call.enqueue_command(cmd).await {
                         error!("Failed to enqueue command: {}", e);
                     }
                 }
+            }
+            match &event {
+                crate::event::SessionEvent::Hangup { .. } => {
+                    info!("Call hung up, stopping playbook");
+                    break;
+                }
+                _ => {}
             }
         }
 

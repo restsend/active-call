@@ -120,6 +120,14 @@ async fn test_playbook_run_flow() -> Result<()> {
         runner.run().await;
     });
 
+    // Simulate Answer event to let runner proceed to dialogue loop
+    active_call.event_sender.send(SessionEvent::Answer {
+        track_id: "track1".to_string(),
+        timestamp: 0,
+        sdp: "".to_string(),
+        refer: None,
+    })?;
+
     // 6. Assert Greeting (on_start)
     // Expect Command::Tts from greeting
     if let Ok(cmd) = cmd_rx.recv().await {
@@ -130,14 +138,6 @@ async fn test_playbook_run_flow() -> Result<()> {
     } else {
         panic!("Did not receive greeting command");
     }
-
-    // Simulate Answer event to let runner proceed to dialogue loop
-    active_call.event_sender.send(SessionEvent::Answer {
-        track_id: "track1".to_string(),
-        timestamp: 0,
-        sdp: "".to_string(),
-        refer: None,
-    })?;
 
     // 7. Simulate User Input
     let event = SessionEvent::AsrFinal {
@@ -240,6 +240,14 @@ async fn test_playbook_hangup_flow() -> Result<()> {
     tokio::spawn(async move {
         runner.run().await;
     });
+
+    // Simulate Answer event
+    active_call.event_sender.send(SessionEvent::Answer {
+        track_id: "test-hangup".to_string(),
+        timestamp: 0,
+        sdp: "".to_string(),
+        refer: None,
+    })?;
 
     // 1. Check TTS
     if let Ok(cmd) = cmd_rx.recv().await {
@@ -397,6 +405,116 @@ async fn test_playbook_reject_flow() -> Result<()> {
         }
     } else {
         panic!("Did not receive Reject command");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_playbook_media_wait_flow() -> Result<()> {
+    let mut config = Config::default();
+    config.udp_port = 0;
+    let stream_engine = Arc::new(StreamEngine::new());
+    let app_state = AppStateBuilder::new()
+        .with_config(config)
+        .with_stream_engine(stream_engine)
+        .build()
+        .await?;
+
+    let active_call = Arc::new(ActiveCall::new(
+        ActiveCallType::Sip,
+        CancellationToken::new(),
+        "test-wait".to_string(),
+        app_state.invitation.clone(),
+        app_state.clone(),
+        TrackConfig::default(),
+        None,
+        false,
+        None,
+        None,
+    ));
+
+    let receiver = active_call.new_receiver();
+    let mut cmd_rx = receiver.cmd_receiver;
+
+    // Use a custom handler to return [Accept, Tts] in on_start
+    struct WaitTestHandler;
+    #[async_trait]
+    impl active_call::playbook::DialogueHandler for WaitTestHandler {
+        async fn on_start(&mut self) -> Result<Vec<Command>> {
+            Ok(vec![
+                Command::Accept {
+                    option: active_call::CallOption::default(),
+                },
+                Command::Tts {
+                    text: "Greetings after answer".to_string(),
+                    speaker: None,
+                    play_id: None,
+                    auto_hangup: None,
+                    streaming: None,
+                    end_of_stream: None,
+                    option: None,
+                    wait_input_timeout: None,
+                    base64: None,
+                },
+            ])
+        }
+        async fn on_event(
+            &mut self,
+            _event: &active_call::event::SessionEvent,
+        ) -> Result<Vec<Command>> {
+            Ok(vec![])
+        }
+        async fn get_history(&self) -> Vec<active_call::playbook::ChatMessage> {
+            vec![]
+        }
+        async fn summarize(&mut self, _prompt: &str) -> Result<String> {
+            Ok("".to_string())
+        }
+    }
+
+    let runner = PlaybookRunner::with_handler(
+        Box::new(WaitTestHandler),
+        active_call.clone(),
+        PlaybookConfig::default(),
+    );
+
+    tokio::spawn(async move {
+        runner.run().await;
+    });
+
+    // 1. We should receive Accept IMMEDIATELY
+    if let Ok(Ok(cmd)) =
+        tokio::time::timeout(std::time::Duration::from_millis(500), cmd_rx.recv()).await
+    {
+        assert!(matches!(cmd, Command::Accept { .. }));
+    } else {
+        panic!("Did not receive Accept command");
+    }
+
+    // 2. We should NOT receive TTS yet (it should be waiting for Answer event)
+    let tts_received =
+        tokio::time::timeout(std::time::Duration::from_millis(200), cmd_rx.recv()).await;
+    assert!(tts_received.is_err(), "TTS should have waited for Answer");
+
+    // 3. Send Answer event
+    active_call.event_sender.send(SessionEvent::Answer {
+        track_id: "track1".to_string(),
+        timestamp: 1000,
+        sdp: "".to_string(),
+        refer: None,
+    })?;
+
+    // 4. NOW we should receive TTS
+    if let Ok(Ok(cmd)) =
+        tokio::time::timeout(std::time::Duration::from_millis(500), cmd_rx.recv()).await
+    {
+        match cmd {
+            Command::Tts { text, .. } => assert_eq!(text, "Greetings after answer"),
+            _ => panic!("Expected TTS command, got {:?}", cmd),
+        }
+    } else {
+        panic!("Did not receive TTS command after Answer");
     }
 
     Ok(())
