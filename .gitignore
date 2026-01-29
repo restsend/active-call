@@ -13,3 +13,5 @@ is_filler.md
 todo.md
 bank-demo/
 models/
+.venv*/
+.claude/
