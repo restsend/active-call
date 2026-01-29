@@ -183,7 +183,7 @@ impl AppStateInner {
             let key: &rsipstack::transaction::key::TransactionKey = &tx.key;
             info!(?key, "received transaction");
             if tx.original.to_header()?.tag()?.as_ref().is_some() {
-                match dialog_layer.match_dialog(&tx.original) {
+                match dialog_layer.match_dialog(&tx) {
                     Some(mut d) => {
                         crate::spawn(async move {
                             match d.handle(&mut tx).await {
