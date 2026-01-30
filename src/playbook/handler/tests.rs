@@ -785,6 +785,7 @@ async fn test_eou_early_response() -> Result<()> {
         track_id: "test".to_string(),
         timestamp: 0,
         completed: true,
+        interrupt_point: None,
     };
     let commands = handler.on_event(&event).await?;
     assert_eq!(commands.len(), 1);
