@@ -1440,6 +1440,16 @@ impl ActiveCall {
     }
 
     async fn setup_caller_track(&self, option: &CallOption) -> Result<()> {
+        let hangup_headers = option
+            .sip
+            .as_ref()
+            .and_then(|s| s.hangup_headers.as_ref())
+            .map(|headers_map| {
+                headers_map
+                    .iter()
+                    .map(|(k, v)| rsip::Header::Other(k.clone(), v.clone()))
+                    .collect::<Vec<rsip::Header>>()
+            });
         self.call_state.write().await.option = Some(option.clone());
         info!(
             session_id = self.session_id,
@@ -1469,6 +1479,7 @@ impl ActiveCall {
                                 self.call_state.clone(),
                                 &self.session_id,
                                 pending_dialog,
+                                hangup_headers,
                             )
                             .await;
                     }
@@ -1558,6 +1569,7 @@ impl ActiveCall {
                                 self.call_state.clone(),
                                 &self.session_id,
                                 pending_dialog,
+                                hangup_headers,
                             )
                             .await;
                     }
@@ -1907,8 +1919,22 @@ impl ActiveCall {
             has_early_media: false,
         };
 
-        let mut client_dialog_handler =
-            DialogStateReceiverGuard::new(self.invitation.dialog_layer.clone(), dlg_state_receiver);
+        let hangup_headers = call_option
+            .sip
+            .as_ref()
+            .and_then(|s| s.hangup_headers.as_ref())
+            .map(|headers_map| {
+                headers_map
+                    .iter()
+                    .map(|(k, v)| rsip::Header::Other(k.clone(), v.clone()))
+                    .collect::<Vec<rsip::Header>>()
+            });
+
+        let mut client_dialog_handler = DialogStateReceiverGuard::new(
+            self.invitation.dialog_layer.clone(),
+            dlg_state_receiver,
+            hangup_headers,
+        );
 
         crate::spawn(async move {
             client_dialog_handler.process_dialog(states).await;
@@ -2015,6 +2041,7 @@ impl ActiveCall {
         call_state_ref: ActiveCallStateRef,
         track_id: &String,
         pending_dialog: PendingDialog,
+        hangup_headers: Option<Vec<rsip::Header>>,
     ) -> Result<()> {
         let state_receiver = pending_dialog.state_receiver;
         //let pending_token_clone = pending_dialog.token;
@@ -2055,8 +2082,11 @@ impl ActiveCall {
             }
         }
 
-        let mut client_dialog_handler =
-            DialogStateReceiverGuard::new(self.invitation.dialog_layer.clone(), state_receiver);
+        let mut client_dialog_handler = DialogStateReceiverGuard::new(
+            self.invitation.dialog_layer.clone(),
+            state_receiver,
+            hangup_headers,
+        );
 
         crate::spawn(async move {
             client_dialog_handler.process_dialog(states).await;

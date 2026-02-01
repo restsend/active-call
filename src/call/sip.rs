@@ -22,14 +22,20 @@ pub struct DialogStateReceiverGuard {
     pub(super) dialog_layer: Arc<DialogLayer>,
     pub(super) receiver: DialogStateReceiver,
     pub(super) dialog_id: Option<DialogId>,
+    pub(super) hangup_headers: Option<Vec<rsip::Header>>,
 }
 
 impl DialogStateReceiverGuard {
-    pub fn new(dialog_layer: Arc<DialogLayer>, receiver: DialogStateReceiver) -> Self {
+    pub fn new(
+        dialog_layer: Arc<DialogLayer>,
+        receiver: DialogStateReceiver,
+        hangup_headers: Option<Vec<rsip::Header>>,
+    ) -> Self {
         Self {
             dialog_layer,
             receiver,
             dialog_id: None,
+            hangup_headers,
         }
     }
     pub async fn recv(&mut self) -> Option<DialogState> {
@@ -59,7 +65,7 @@ impl DialogStateReceiverGuard {
 
     pub async fn drop_async(&mut self) {
         if let Some(dialog) = self.take_dialog() {
-            if let Err(e) = dialog.hangup().await {
+            if let Err(e) = dialog.hangup_with_headers(self.hangup_headers.take()).await {
                 warn!(id=%dialog.id(), "error hanging up dialog on drop: {}", e);
             }
         }

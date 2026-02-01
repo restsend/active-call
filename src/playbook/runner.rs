@@ -255,6 +255,9 @@ pub fn apply_playbook_config(option: &mut CallOption, config: &PlaybookConfig) {
         }
         option.eou = Some(eou);
     }
+    if let Some(sip) = config.sip.clone() {
+        option.sip = Some(sip);
+    }
 }
 
 #[cfg(test)]

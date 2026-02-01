@@ -31,7 +31,9 @@ llm:
   model: "gpt-4o"
   apiKey: "OPENAI_API_KEY"
   #baseUrl: "https://api.openai.com/v1"
+  language: "en" # Default: "zh". Used for loading language-specific tool instructions and features
   features: ["http_tool", "voice_emotion"] # Enable enhanced capabilities
+  # toolInstructions: "Custom tool instructions..." # Optional: Override default tool usage instructions
 ```
 
 ### 2.2 Interaction Behavior
@@ -126,7 +128,37 @@ realtime:
 ### 5.2 RAG (Retrieval-Augmented Generation)
 When enabled in the LLM config, the AI can call built-in knowledge base retrieval logic.
 
-### 5.3 Post-hook (Reporting)
+### 5.3 Customizing Tool Instructions
+By default, the system includes tool usage instructions in the prompt based on the `language` setting (e.g., English for "en", Chinese for "zh"). These instructions tell the LLM how to use commands like `<hangup/>`, `<refer/>`, etc.
+
+**Method 1: Use Language-Specific Defaults**
+Set the `language` field in the LLM config:
+```yaml
+llm:
+  language: "en" # Will use features/tool_instructions.en.md
+```
+
+**Method 2: Provide Custom Instructions**
+Override the default tool instructions entirely:
+```yaml
+llm:
+  toolInstructions: |
+    Custom instructions for your specific use case.
+    You can define your own tool usage format here.
+```
+
+**Method 3: Modify Feature Files**
+Edit the files directly:
+- `features/tool_instructions.en.md` for English
+- `features/tool_instructions.zh.md` for Chinese
+- Add your own language: `features/tool_instructions.ja.md` for Japanese
+
+This allows you to:
+- Translate tool instructions to any language
+- Add domain-specific guidance
+- Customize the format and style of instructions
+
+### 5.4 Post-hook (Reporting)
 Automatically generate a summary and push it to your business system after the call ends:
 
 ```yaml

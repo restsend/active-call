@@ -39,6 +39,7 @@ pub struct SipOption {
     pub realm: Option<String>,
     pub contact: Option<String>,
     pub headers: Option<HashMap<String, String>>,
+    pub hangup_headers: Option<HashMap<String, String>>,
 }
 
 #[skip_serializing_none]

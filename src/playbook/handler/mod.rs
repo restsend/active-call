@@ -173,20 +173,36 @@ impl LlmHandler {
             format!("\n\n### Enhanced Capabilities:{}\n", features_prompt)
         };
 
+        // Load tool instructions - either custom or language-specific default
+        let tool_instructions = if let Some(custom) = &config.tool_instructions {
+            custom.clone()
+        } else {
+            let lang = config.language.as_deref().unwrap_or("zh");
+            Self::load_feature_snippet("tool_instructions", lang)
+                .unwrap_or_else(|_| {
+                    // Fallback to English if loading fails
+                    Self::load_feature_snippet("tool_instructions", "en")
+                        .unwrap_or_else(|_| {
+                            // Ultimate fallback to hardcoded English
+                            "Tool usage instructions:\n\
+                            - To hang up the call, output: <hangup/>\n\
+                            - To transfer the call, output: <refer to=\"sip:xxxx\"/>\n\
+                            - To play an audio file, output: <play file=\"path/to/file.wav\"/>\n\
+                            - To switch to another scene, output: <goto scene=\"scene_id\"/>\n\
+                            - To call an external HTTP API, output JSON:\n\
+                              ```json\n\
+                              {{ \"tools\": [{{ \"name\": \"http\", \"url\": \"...\", \"method\": \"POST\", \"body\": {{ ... }} }}] }}\n\
+                              ```\n\
+                            Please use XML tags for simple actions and JSON blocks for tool calls. \
+                            Output your response in short sentences. Each sentence will be played as soon as it is finished."
+                                .to_string()
+                        })
+                })
+        };
+
         format!(
-            "{}{}\n\n\
-            Tool usage instructions:\n\
-            - To hang up the call, output: <hangup/>\n\
-            - To transfer the call, output: <refer to=\"sip:xxxx\"/>\n\
-            - To play an audio file, output: <play file=\"path/to/file.wav\"/>\n\
-            - To switch to another scene, output: <goto scene=\"scene_id\"/>\n\
-            - To call an external HTTP API, output JSON:\n\
-              ```json\n\
-              {{ \"tools\": [{{ \"name\": \"http\", \"url\": \"...\", \"method\": \"POST\", \"body\": {{ ... }} }}] }}\n\
-              ```\n\
-            Please use XML tags for simple actions and JSON blocks for tool calls. \
-            Output your response in short sentences. Each sentence will be played as soon as it is finished.",
-            base_prompt, features_section
+            "{}{}\n\n{}",
+            base_prompt, features_section, tool_instructions
         )
     }
 

@@ -31,7 +31,9 @@ llm:
   model: "gpt-4o"
   #apiKey: "OPENAI_API_KEY"
   #baseUrl: "https://api.openai.com/v1"
+  language: "zh" # 默认: "zh"。用于加载语言特定的工具说明和功能特性
   features: ["http_tool", "voice_emotion"] # 启用增强功能
+  # toolInstructions: "自定义工具使用说明..." # 可选: 覆盖默认的工具使用说明
 ```
 
 ### 2.2 交互行为配置
@@ -126,7 +128,37 @@ realtime:
 ### 5.2 RAG (检索增强生成)
 在 llm 配置中启用功能后，AI 可以调用内置的知识库检索逻辑。
 
-### 5.3 Post-hook (通话结果上报)
+### 5.3 自定义工具使用说明
+默认情况下，系统会根据 `language` 配置（如 "en" 为英文，"zh" 为中文）在提示词中包含工具使用说明。这些说明告诉 LLM 如何使用 `<hangup/>`、`<refer/>` 等命令。
+
+**方法1: 使用语言特定的默认说明**
+在 LLM 配置中设置 `language` 字段：
+```yaml
+llm:
+  language: "zh" # 将使用 features/tool_instructions.zh.md
+```
+
+**方法2: 提供自定义说明**
+完全覆盖默认的工具使用说明：
+```yaml
+llm:
+  toolInstructions: |
+    针对您特定用例的自定义说明。
+    您可以在这里定义自己的工具使用格式。
+```
+
+**方法3: 修改特性文件**
+直接编辑文件：
+- `features/tool_instructions.zh.md` 用于中文
+- `features/tool_instructions.en.md` 用于英文
+- 添加您自己的语言：`features/tool_instructions.ja.md` 用于日语
+
+这允许您：
+- 将工具说明翻译成任何语言
+- 添加特定领域的指导
+- 自定义说明的格式和风格
+
+### 5.4 Post-hook (通话结果上报)
 通话挂断后，自动生成摘要并推送到业务系统：
 
 ```yaml

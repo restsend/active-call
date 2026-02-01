@@ -2,7 +2,7 @@ use crate::media::recorder::RecorderOption;
 use crate::media::vad::VADOption;
 use crate::synthesis::SynthesisOption;
 use crate::transcription::TranscriptionOption;
-use crate::{EouOption, RealtimeOption, media::ambiance::AmbianceOption};
+use crate::{EouOption, RealtimeOption, SipOption, media::ambiance::AmbianceOption};
 use anyhow::{Result, anyhow};
 use minijinja::Environment;
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,7 @@ pub struct PlaybookConfig {
     pub realtime: Option<RealtimeOption>,
     pub posthook: Option<PostHookConfig>,
     pub follow_up: Option<FollowUpConfig>,
+    pub sip: Option<SipOption>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Default)]
@@ -114,6 +115,9 @@ pub struct LlmConfig {
     pub features: Option<Vec<String>>,
     pub repair_window_ms: Option<u64>,
     pub summary_limit: Option<usize>,
+    /// Custom tool instructions. If not set, default tool instructions based on language will be used.
+    /// Set this to override the built-in tool usage instructions completely.
+    pub tool_instructions: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
