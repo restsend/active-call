@@ -1423,6 +1423,9 @@ impl ActiveCall {
         if let Some(ref external_ip) = self.app_state.config.external_ip {
             rtc_config.external_ip = Some(external_ip.clone());
         }
+        if let Some(ref bind_ip) = self.app_state.config.rtp_bind_ip {
+            rtc_config.bind_ip = Some(bind_ip.clone());
+        }
 
         rtc_config.enable_latching = self.app_state.config.enable_rtp_latching;
 
@@ -1767,6 +1770,9 @@ impl ActiveCall {
         if let Some(ref external_ip) = self.app_state.config.external_ip {
             rtc_config.external_ip = Some(external_ip.clone());
         }
+        if let Some(ref bind_ip) = self.app_state.config.rtp_bind_ip {
+            rtc_config.bind_ip = Some(bind_ip.clone());
+        }
 
         let mut webrtc_track = RtcTrack::new(
             self.cancel_token.child_token(),
@@ -2008,6 +2014,9 @@ impl ActiveCall {
             rtc_config.ice_servers = self.app_state.config.ice_servers.clone();
             if let Some(ref external_ip) = self.app_state.config.external_ip {
                 rtc_config.external_ip = Some(external_ip.clone());
+            }
+            if let Some(ref bind_ip) = self.app_state.config.rtp_bind_ip {
+                rtc_config.bind_ip = Some(bind_ip.clone());
             }
             rtc_config.enable_latching = self.app_state.config.enable_rtp_latching;
 

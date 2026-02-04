@@ -194,6 +194,7 @@ pub struct Config {
     pub rtp_end_port: Option<u16>,
     #[serde(default = "default_config_rtp_latching")]
     pub enable_rtp_latching: Option<bool>,
+    pub rtp_bind_ip: Option<String>,
 
     pub callrecord: Option<CallRecordConfig>,
     #[serde(default = "default_config_media_cache_path")]
@@ -301,6 +302,7 @@ impl Default for Config {
             rtp_start_port: default_config_rtp_start_port(),
             rtp_end_port: default_config_rtp_end_port(),
             enable_rtp_latching: Some(true),
+            rtp_bind_ip: None,
             recording: None,
             rewrites: None,
         }
