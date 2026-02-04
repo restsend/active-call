@@ -149,6 +149,10 @@ impl RtcTrack {
         if let Some(bind_ip) = &self.rtc_config.bind_ip {
             config.bind_ip = Some(bind_ip.clone());
         }
+        if let Some((rtp_start_port, rtp_end_port)) = self.rtc_config.rtp_port_range {
+            config.rtp_start_port = Some(rtp_start_port);
+            config.rtp_end_port = Some(rtp_end_port);
+        }
 
         config.enable_latching = self
             .rtc_config
