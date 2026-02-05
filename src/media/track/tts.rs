@@ -273,6 +273,7 @@ impl TtsTask {
                         timestamp: crate::media::get_timestamp(),
                         sample_rate,
                         channels: 1,
+                        ..Default::default()
                     };
 
                     if let Err(e) = self.processor_chain.process_frame(&mut frame) {
@@ -509,6 +510,7 @@ impl TtsTask {
                                     "length": len,
                                     "cached": true,
                                     "ttfb": duration,
+                                    "duration": duration,
                             }),
                             duration,
                         })
@@ -569,6 +571,7 @@ impl TtsTask {
             }
             Ok(SynthesisEvent::Finished) => {
                 let entry = self.metadatas.entry(assume_seq).or_default();
+                let duration = (crate::media::get_timestamp() - entry.recv_time) as u32;
                 debug!(
                     session_id = %self.session_id,
                     track_id = %self.track_id,
@@ -576,6 +579,7 @@ impl TtsTask {
                     cmd_seq = ?cmd_seq,
                     streaming = self.streaming,
                     total_bytes = entry.total_bytes,
+                    duration,
                     "tts synthesis completed for command sequence"
                 );
                 self.event_sender
@@ -588,8 +592,9 @@ impl TtsTask {
                                 "length": entry.total_bytes,
                                 "cached": false,
                                 "ttfb": entry.ttfb,
+                                "duration": duration,
                         }),
-                        duration: (crate::media::get_timestamp() - entry.recv_time) as u32,
+                        duration,
                     })
                     .ok();
 

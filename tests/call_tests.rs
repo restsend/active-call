@@ -3,6 +3,7 @@ use active_call::call::Command;
 use active_call::config::Config;
 use active_call::event::EventSender;
 use active_call::handler::call_router;
+use active_call::media::SourcePacket;
 use active_call::{
     event::SessionEvent,
     media::Sample,
@@ -31,7 +32,7 @@ struct MockAsrClient {
 
 #[async_trait]
 impl TranscriptionClient for MockAsrClient {
-    fn send_audio(&self, samples: &[Sample]) -> Result<()> {
+    fn send_audio(&self, samples: &[Sample], _src_packet: Option<&SourcePacket>) -> Result<()> {
         let _ = self.audio_tx.send(samples.to_vec());
         Ok(())
     }

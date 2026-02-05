@@ -1,5 +1,5 @@
 use crate::event::{EventSender, SessionEvent};
-use crate::media::TrackId;
+use crate::media::{SourcePacket, TrackId};
 use crate::transcription::{
     TranscriptionClient, TranscriptionOption, handle_wait_for_answer_with_audio_drop,
 };
@@ -493,7 +493,7 @@ impl TencentCloudAsrClient {
 
 #[async_trait]
 impl TranscriptionClient for TencentCloudAsrClient {
-    fn send_audio(&self, samples: &[Sample]) -> Result<()> {
+    fn send_audio(&self, samples: &[Sample], _src_packet: Option<&SourcePacket>) -> Result<()> {
         self.inner.audio_tx.send(samples_to_bytes(samples))?;
         Ok(())
     }

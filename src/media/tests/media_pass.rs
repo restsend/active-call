@@ -243,6 +243,7 @@ async fn test_media_pass() -> Result<()> {
             timestamp: crate::media::get_timestamp(),
             sample_rate: sending_sample_rate,
             channels: 1,
+            ..Default::default()
         };
         track.send_packet(&audio_frame).await?;
     }
@@ -394,6 +395,7 @@ async fn test_resampling_to_output_sample_rate() -> Result<()> {
             timestamp: crate::media::get_timestamp(),
             sample_rate: input_sample_rate, // Different from output_sample_rate
             channels: 1,
+            ..Default::default()
         };
         track.send_packet(&audio_frame).await?;
     }

@@ -61,7 +61,7 @@ pub type FnCreateTtsClient =
 pub type CreateProcessorsHook = Box<
     dyn Fn(
             Arc<StreamEngine>,
-            &dyn Track,
+            TrackId,
             CancellationToken,
             EventSender,
             TrackPacketSender,
@@ -235,7 +235,7 @@ impl StreamEngine {
     ) -> Result<Vec<Box<dyn Processor>>> {
         (engine.clone().create_processors_hook)(
             engine,
-            track,
+            track.id().clone(),
             cancel_token,
             event_sender,
             packet_sender,
@@ -268,21 +268,20 @@ impl StreamEngine {
         self
     }
 
-    fn default_create_procesors_hook(
+    pub fn default_create_procesors_hook(
         engine: Arc<StreamEngine>,
-        track: &dyn Track,
+        track_id: TrackId,
         cancel_token: CancellationToken,
         event_sender: EventSender,
         packet_sender: TrackPacketSender,
         option: CallOption,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Box<dyn Processor>>>> + Send>> {
-        let track_id = track.id().clone();
         Box::pin(async move {
             let mut processors = vec![];
-            debug!(track_id = %track_id, "Creating processors for track");
+            debug!(%track_id, "Creating processors for track");
 
             if let Some(realtime_option) = option.realtime {
-                debug!(track_id = %track_id, "Adding RealtimeProcessor");
+                debug!(%track_id, "Adding RealtimeProcessor");
                 let realtime_processor = crate::media::realtime_processor::RealtimeProcessor::new(
                     track_id.clone(),
                     cancel_token.child_token(),
@@ -298,7 +297,7 @@ impl StreamEngine {
 
             match option.denoise {
                 Some(true) => {
-                    debug!(track_id = %track_id, "Adding NoiseReducer processor");
+                    debug!(%track_id, "Adding NoiseReducer processor");
                     let noise_reducer = NoiseReducer::new(INTERNAL_SAMPLERATE as usize);
                     processors.push(Box::new(noise_reducer) as Box<dyn Processor>);
                 }
@@ -306,7 +305,7 @@ impl StreamEngine {
             }
             match option.vad {
                 Some(mut option) => {
-                    debug!(track_id = %track_id, "Adding VadProcessor processor type={:?}", option.r#type);
+                    debug!(%track_id, "Adding VadProcessor processor type={:?}", option.r#type);
                     option.samplerate = INTERNAL_SAMPLERATE;
                     let vad_processor: Box<dyn Processor + 'static> = engine.create_vad_processor(
                         cancel_token.child_token(),
@@ -319,7 +318,7 @@ impl StreamEngine {
             }
             match option.asr {
                 Some(mut option) => {
-                    debug!(track_id = %track_id, "Adding AsrProcessor processor provider={:?}", option.provider);
+                    debug!(%track_id, "Adding AsrProcessor processor provider={:?}", option.provider);
                     option.samplerate = Some(INTERNAL_SAMPLERATE);
                     let asr_processor = engine
                         .create_asr_processor(

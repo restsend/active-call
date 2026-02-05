@@ -63,6 +63,7 @@ async fn test_vad_with_noise_denoise() {
             sample_rate,
             timestamp: i as u64 * chunk_duration_ms,
             channels: 1,
+            ..Default::default()
         };
         nr.process_frame(&mut frame).unwrap();
         vad.process_frame(&mut frame).unwrap();
@@ -152,6 +153,7 @@ async fn test_vad_speech_intervals() {
                 sample_rate,
                 timestamp: (processed_samples * 1000) / sample_rate as u64,
                 channels: 1,
+                ..Default::default()
             };
             processed_samples += frame_size as u64;
 
@@ -206,6 +208,7 @@ async fn test_silence_timeout() {
         },
         sample_rate: 16000,
         channels: 1,
+        ..Default::default()
     };
 
     // First send some strong speech frames

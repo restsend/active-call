@@ -18,6 +18,8 @@ fn test_basic_processing() {
             track_id: "test".to_string(),
             timestamp: 0,
             channels: 1,
+            src_packet: None,
+            ..Default::default()
         };
         reducer.process_frame(&mut frame).unwrap();
         let samples = match frame.samples {
@@ -58,6 +60,7 @@ fn test_denoiser_performance() {
             track_id: "test".to_string(),
             timestamp: 0,
             channels: 1,
+            ..Default::default()
         };
         reducer.process_frame(&mut frame).unwrap();
     }

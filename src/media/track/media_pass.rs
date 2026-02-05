@@ -218,6 +218,7 @@ impl Track for MediaPassTrack {
                             timestamp: crate::media::get_timestamp(),
                             sample_rate: input_sample_rate,
                             channels,
+                            ..Default::default()
                         };
 
                         if let Err(e) = processor_chain.process_frame(&mut frame) {
@@ -252,6 +253,7 @@ impl Track for MediaPassTrack {
                                         timestamp: crate::media::get_timestamp(),
                                         sample_rate: input_sample_rate,
                                         channels,
+                            ..Default::default()
                                     };
 
                                     if let Err(e) = processor_chain.process_frame(&mut frame) {

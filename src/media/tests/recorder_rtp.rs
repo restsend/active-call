@@ -40,6 +40,7 @@ async fn test_recorder_rtp_g711() -> Result<()> {
         timestamp: 0,
         sample_rate: 8000,
         channels: 1,
+        ..Default::default()
     };
     tx.send(frame)?;
 
@@ -86,6 +87,7 @@ async fn test_recorder_rtp_g722() -> Result<()> {
         timestamp: 0,
         sample_rate: 16000,
         channels: 1,
+        ..Default::default()
     };
     tx.send(frame)?;
 
@@ -132,6 +134,7 @@ async fn test_recorder_rtp_pcma() -> Result<()> {
         timestamp: 0,
         sample_rate: 8000,
         channels: 1,
+        ..Default::default()
     };
     tx.send(frame)?;
 
@@ -179,6 +182,7 @@ async fn test_recorder_rtp_pcm_l16() -> Result<()> {
         timestamp: 0,
         sample_rate: 44100,
         channels: 1,
+        ..Default::default()
     };
     tx.send(frame)?;
 

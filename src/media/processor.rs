@@ -1,7 +1,7 @@
 use super::INTERNAL_SAMPLERATE;
 use super::track::track_codec::TrackCodec;
 use crate::event::{EventSender, SessionEvent};
-use crate::media::{AudioFrame, Samples};
+use crate::media::{AudioFrame, Samples, SourcePacket};
 use anyhow::Result;
 use std::any::Any;
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,7 @@ impl Default for AudioFrame {
             timestamp: 0,
             sample_rate: 16000,
             channels: 1,
+            src_packet: None,
         }
     }
 }
@@ -89,16 +90,21 @@ impl ProcessorChain {
         if !self.force_decode && processors.is_empty() {
             return Ok(());
         }
-
         match &mut frame.samples {
             Samples::RTP {
                 payload_type,
                 payload,
-                ..
+                sequence_number,
             } => {
                 if TrackCodec::is_audio(*payload_type) {
                     let (decoded_sample_rate, channels, samples) =
                         self.codec.decode(*payload_type, &payload, self.sample_rate);
+                    let src_packet = SourcePacket {
+                        sequence_number: *sequence_number,
+                        payload_type: *payload_type,
+                        payload: std::mem::take(payload),
+                    };
+                    frame.src_packet = Some(src_packet);
                     frame.channels = channels;
                     frame.samples = Samples::PCM { samples };
                     frame.sample_rate = decoded_sample_rate;

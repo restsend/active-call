@@ -43,7 +43,7 @@ impl Default for VADOption {
         Self {
             r#type: VadType::Silero,
             samplerate: 16000,
-            speech_padding: 250,  // min_speech_duration_ms (match silero_vad default)
+            speech_padding: 250, // min_speech_duration_ms (match silero_vad default)
             silence_padding: 100, // min_silence_duration_ms
             ratio: 0.5,
             voice_threshold: 0.5,

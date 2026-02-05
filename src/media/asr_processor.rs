@@ -13,7 +13,8 @@ impl Processor for AsrProcessor {
         match &frame.samples {
             Samples::PCM { samples } => {
                 if !samples.is_empty() {
-                    self.asr_client.send_audio(&samples)?;
+                    self.asr_client
+                        .send_audio(&samples, frame.src_packet.as_ref())?;
                 } else {
                     tracing::debug!(track_id = %frame.track_id, "AsrProcessor: empty PCM samples");
                 }

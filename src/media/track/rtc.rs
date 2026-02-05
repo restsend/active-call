@@ -445,6 +445,7 @@ impl RtcTrack {
                 timestamp: crate::media::get_timestamp(),
                 sample_rate: src_codec.samplerate(),
                 channels: src_codec.channels(),
+                ..Default::default()
             };
             if let Err(e) = processor_chain.process_frame(&mut af) {
                 debug!(track_id=%track_id, "processor_chain process_frame error: {:?}", e);

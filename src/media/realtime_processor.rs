@@ -177,6 +177,7 @@ async fn run_realtime_loop(
                                         timestamp: crate::media::get_timestamp(),
                                         sample_rate: INTERNAL_SAMPLERATE,
                                         channels: 1,
+                                        ..Default::default()
                                     })?;
                                 }
                             }

@@ -89,7 +89,7 @@ async fn test_tencent_cloud_asr() {
 
     for chunk in chunks.iter() {
         client
-            .send_audio(chunk)
+            .send_audio(chunk, None)
             .expect("Failed to send audio chunk");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -208,7 +208,7 @@ async fn test_aliyun_asr() {
 
     for chunk in chunks.iter() {
         client
-            .send_audio(chunk)
+            .send_audio(chunk, None)
             .expect("Failed to send audio chunk");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

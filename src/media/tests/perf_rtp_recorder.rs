@@ -30,6 +30,7 @@ mod tests {
                 timestamp: (i * 160) as u64,
                 sample_rate: 8000,
                 channels: 1,
+                ..Default::default()
             };
 
             // Simulate forwarding logic (e.g. sending to another track)

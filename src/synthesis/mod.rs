@@ -104,6 +104,7 @@ pub struct SynthesisOption {
     pub endpoint: Option<String>,
     pub extra: Option<HashMap<String, String>>,
     pub max_concurrent_tasks: Option<usize>,
+    pub session_id: Option<String>,
 }
 
 impl SynthesisOption {
@@ -126,6 +127,7 @@ impl SynthesisOption {
                 endpoint: other.endpoint.or(self.endpoint.clone()),
                 extra: other.extra.or(self.extra.clone()),
                 max_concurrent_tasks: other.max_concurrent_tasks.or(self.max_concurrent_tasks),
+                session_id: other.session_id.or(self.session_id.clone()),
             }
         } else {
             self.clone()
@@ -217,6 +219,7 @@ impl Default for SynthesisOption {
             endpoint: None,
             extra: None,
             max_concurrent_tasks: None,
+            session_id: None,
         }
     }
 }

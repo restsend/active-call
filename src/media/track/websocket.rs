@@ -127,6 +127,7 @@ impl Track for WebsocketTrack {
                         timestamp: crate::media::get_timestamp(),
                         sample_rate,
                         channels,
+                        ..Default::default()
                     };
 
                     if let Err(e) = processor_chain.process_frame(&mut packet) {

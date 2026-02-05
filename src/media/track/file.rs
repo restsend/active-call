@@ -266,6 +266,7 @@ async fn process_audio_reader(
                 samples: Samples::PCM { samples: chunk },
                 sample_rate: chunk_sample_rate,
                 channels,
+                ..Default::default()
             };
 
             match processor_chain.process_frame(&mut packet) {

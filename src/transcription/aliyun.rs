@@ -1,8 +1,7 @@
 use super::{TranscriptionClient, TranscriptionOption, handle_wait_for_answer_with_audio_drop};
 use crate::{
     event::{EventSender, SessionEvent},
-    media::Sample,
-    media::TrackId,
+    media::{Sample, SourcePacket, TrackId},
 };
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -615,7 +614,7 @@ impl AliyunAsrClientBuilder {
 
 #[async_trait]
 impl TranscriptionClient for AliyunAsrClient {
-    fn send_audio(&self, samples: &[Sample]) -> Result<()> {
+    fn send_audio(&self, samples: &[Sample], _src_packet: Option<&SourcePacket>) -> Result<()> {
         let audio_data = samples_to_bytes(samples);
         self.inner
             .audio_tx

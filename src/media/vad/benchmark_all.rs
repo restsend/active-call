@@ -41,6 +41,7 @@ mod tests {
                     sample_rate: sample_rate as u32,
                     timestamp: (count * 20) as u64,
                     channels: 1,
+                    ..Default::default()
                 };
                 silero.process(&mut frame);
                 count += 1;

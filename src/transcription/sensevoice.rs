@@ -1,5 +1,6 @@
 use crate::event::EventSender;
 use crate::event::SessionEvent;
+use crate::media::SourcePacket;
 use crate::media::vad::{TinySilero, VADOption, VadEngine};
 use crate::media::{AudioFrame, INTERNAL_SAMPLERATE, Sample, Samples, TrackId};
 use crate::offline::get_offline_models;
@@ -175,6 +176,7 @@ async fn process_stream(
             timestamp: current_timestamp,
             sample_rate: sample_rate as u32,
             channels: 1,
+            ..Default::default()
         };
 
         let vad_results = vad.process(&mut frame);
@@ -264,7 +266,7 @@ async fn process_stream(
 }
 
 impl TranscriptionClient for SensevoiceAsrClient {
-    fn send_audio(&self, samples: &[Sample]) -> Result<()> {
+    fn send_audio(&self, samples: &[Sample], _src_packet: Option<&SourcePacket>) -> Result<()> {
         self.inner
             .audio_tx
             .send(samples.to_vec())

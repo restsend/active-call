@@ -37,9 +37,17 @@ pub enum Samples {
     Empty,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourcePacket {
+    pub sequence_number: u16,
+    pub payload_type: u8,
+    pub payload: PayloadBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioFrame {
     pub track_id: TrackId,
     pub samples: Samples,
+    pub src_packet: Option<SourcePacket>,
     pub timestamp: u64,
     pub sample_rate: u32,
     pub channels: u16,
@@ -53,6 +61,7 @@ impl Samples {
         }
     }
 }
+
 // get timestamp in milliseconds
 pub fn get_timestamp() -> u64 {
     let now = std::time::SystemTime::now();
