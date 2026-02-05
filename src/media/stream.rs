@@ -139,7 +139,7 @@ impl MediaStream {
     pub async fn remove_track(&self, id: &TrackId, graceful: bool) {
         let track = { self.tracks.write().await.remove(id) };
         if let Some((track, _)) = track {
-            self.suppressed_sources.lock().unwrap().remove(id);
+            self.resume_forwarding(id);
             let res = if !graceful {
                 track.lock().await.stop().await
             } else {
@@ -268,6 +268,10 @@ impl MediaStream {
     pub fn resume_forwarding(&self, track_id: &TrackId) {
         self.suppressed_sources.lock().unwrap().remove(track_id);
     }
+
+    fn is_suppressed(&self, track_id: &TrackId) -> bool {
+        self.suppressed_sources.lock().unwrap().contains(track_id)
+    }
 }
 
 #[derive(Clone)]
@@ -341,12 +345,7 @@ impl MediaStream {
     async fn handle_forward_track(&self, mut packet_receiver: TrackPacketReceiver) {
         let event_sender = self.event_sender.clone();
         while let Some(packet) = packet_receiver.recv().await {
-            let suppressed = {
-                self.suppressed_sources
-                    .lock()
-                    .unwrap()
-                    .contains(&packet.track_id)
-            };
+            let suppressed = self.is_suppressed(&packet.track_id);
             // Process the packet with each track
             for (track_id, (track, dtmf_detector)) in self.tracks.read().await.iter() {
                 if track_id == &packet.track_id {
@@ -379,9 +378,7 @@ impl MediaStream {
                 }
 
                 let mut guard = track.lock().await;
-                let track_suppressed =
-                    { self.suppressed_sources.lock().unwrap().contains(track_id) };
-                if track_suppressed {
+                if self.is_suppressed(track_id) {
                     // recheck suppression to not hold lock across await - might cause deadlocks
                     drop(guard);
                     continue;
