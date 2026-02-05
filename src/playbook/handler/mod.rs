@@ -375,6 +375,7 @@ impl LlmHandler {
             option: None,
             wait_input_timeout: Some(timeout),
             base64: None,
+            cache_key: None,
         }
     }
 
@@ -673,6 +674,7 @@ impl LlmHandler {
                     option: None,
                     wait_input_timeout: None,
                     base64: None,
+                    cache_key: None,
                 });
             }
         }
@@ -696,6 +698,7 @@ impl LlmHandler {
             option: None,
             wait_input_timeout: Some(10000),
             base64: None,
+            cache_key: None,
         }
     }
 

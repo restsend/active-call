@@ -456,6 +456,7 @@ async fn test_playbook_media_wait_flow() -> Result<()> {
                     option: None,
                     wait_input_timeout: None,
                     base64: None,
+                    cache_key: None,
                 },
             ])
         }

@@ -110,6 +110,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .await?;
 
@@ -188,6 +189,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .await?;
 
@@ -618,6 +620,7 @@ impl ActiveCall {
                 option,
                 wait_input_timeout,
                 base64,
+                cache_key,
             } => {
                 self.do_tts(
                     text,
@@ -629,6 +632,7 @@ impl ActiveCall {
                     option,
                     wait_input_timeout,
                     base64.unwrap_or_default(),
+                    cache_key,
                 )
                 .await
             }
@@ -920,6 +924,7 @@ impl ActiveCall {
         option: Option<SynthesisOption>,
         wait_input_timeout: Option<u32>,
         base64: bool,
+        cache_key: Option<String>,
     ) -> Result<()> {
         let tts_option = {
             let call_state = self.call_state.read().await;
@@ -947,6 +952,7 @@ impl ActiveCall {
             end_of_stream,
             option: tts_option,
             base64,
+            cache_key,
         };
         info!(
             session_id = self.session_id,
@@ -959,6 +965,7 @@ impl ActiveCall {
             end_of_stream = play_command.end_of_stream,
             wait_input_timeout = wait_input_timeout.unwrap_or_default(),
             is_base64 = play_command.base64,
+            cache_key = play_command.cache_key.as_deref(),
             "new synthesis"
         );
 

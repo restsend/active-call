@@ -380,6 +380,7 @@ impl TtsTask {
             text_length = cmd.text.len(),
             base64 = cmd.base64,
             end_of_stream = cmd.end_of_stream,
+            cache_key = cmd.cache_key.as_deref(),
             "tts track: received command"
         );
         let text = &cmd.text;
@@ -466,12 +467,14 @@ impl TtsTask {
     // set cache key for each cmd, return true if cached and retrieve succeed
     async fn handle_cache(&mut self, cmd: &SynthesisCommand, cmd_seq: usize) -> bool {
         let start_time_ms = crate::media::get_timestamp();
-        let cache_key = cache::generate_cache_key(
-            &format!("tts:{}{}", self.client.provider(), cmd.text),
-            self.sample_rate,
-            cmd.option.speaker.as_ref(),
-            cmd.option.speed,
-        );
+        let cache_key = cmd.cache_key.as_ref().cloned().unwrap_or_else(|| {
+            cache::generate_cache_key(
+                &format!("tts:{}{}", self.client.provider(), cmd.text),
+                self.sample_rate,
+                cmd.option.speaker.as_ref(),
+                cmd.option.speed,
+            )
+        });
 
         // initial chunks map at cmd_seq for tts to save chunks
         self.metadatas.get_mut(&cmd_seq).map(|entry| {

@@ -56,6 +56,8 @@ pub enum Command {
         wait_input_timeout: Option<u32>,
         /// if true, the text is base64 encoded pcm samples
         base64: Option<bool>,
+        /// Customizing cache key for TTS Result
+        cache_key: Option<String>,
     },
     Play {
         url: String,
