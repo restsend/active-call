@@ -2007,6 +2007,9 @@ impl ActiveCall {
             hangup_headers,
         );
 
+        self.media_stream
+            .suppress_forwarding(&self.session_id)
+            .await;
         crate::spawn(async move {
             client_dialog_handler.process_dialog(states).await;
         });
@@ -2015,6 +2018,7 @@ impl ActiveCall {
             .invitation
             .invite(invite_option, dlg_state_sender)
             .await?;
+        self.media_stream.resume_forwarding(&self.session_id).await;
 
         self.call_state.write().await.moh = None;
 
