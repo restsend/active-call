@@ -23,6 +23,7 @@ use rsip::prelude::HeadersExt;
 use rsipstack::transaction::{
     Endpoint, TransactionReceiver,
     endpoint::{TargetLocator, TransportEventInspector},
+    transaction::Transaction,
 };
 use rsipstack::{dialog::dialog_layer::DialogLayer, transaction::endpoint::MessageInspector};
 use std::collections::HashSet;
@@ -348,6 +349,11 @@ impl AppStateInner {
                     info!(?key, "ignoring out-of-dialog OPTIONS request");
                     continue;
                 }
+                rsip::Method::Register => {
+                    if let Err(e) = self.forward_register(tx).await {
+                        warn!("error forwarding registration: {:?}", e);
+                    }
+                }
                 _ => {
                     info!(?key, "received request: {:?}", tx.original.method);
                     match tx.reply(rsip::StatusCode::OK).await {
@@ -595,6 +601,124 @@ impl AppStateInner {
             alive_users.write().unwrap().remove(&user);
         });
         Ok(())
+    }
+
+    pub async fn forward_register(&self, mut tx: Transaction) -> Result<()> {
+        let key = &tx.key;
+        let target_uri = match tx.original.to_header().and_then(|h| h.uri()) {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(?key, "failed to parse From header: {:?}", e);
+                if let Err(e) = tx.reply(rsip::StatusCode::BadRequest).await {
+                    warn!("error replying to request: {:?}", e);
+                }
+                return Ok(());
+            }
+        };
+        // Check if the target URI matches one of our own addresses
+        let target_host = &target_uri.host_with_port;
+        for our_addr in  self.endpoint.get_addrs() {
+            if our_addr.addr == *target_host {
+                // Target is this server, respond with OK
+                if let Err(e) = tx.reply(rsip::StatusCode::OK).await {
+                    warn!("error replying to REGISTER: {:?}", e);
+                }
+                return Ok(());
+            }
+        }
+
+        let mut headers: Vec<rsip::Header> = tx.original.headers.clone().into();
+        // Decrement Max-Forwards header
+        let mut max_forwards_found = false;
+        for header in headers.iter_mut() {
+            if let rsip::Header::MaxForwards(mf) = header {
+                let current_value: u32 = mf.num().unwrap_or(70);
+                if current_value == 0 {
+                    warn!(?key, "Max-Forwards is 0, rejecting request");
+                    if let Err(e) = tx.reply(rsip::StatusCode::TooManyHops).await {
+                        warn!("error replying to request: {:?}", e);
+                    }
+                    return Ok(());
+                }
+                *header = rsip::Header::MaxForwards((current_value - 1).into());
+                max_forwards_found = true;
+                break;
+            }
+        }
+        if !max_forwards_found {
+            headers.push(rsip::Header::MaxForwards(69.into()));
+        }
+
+        // Add Via header for this proxy
+        let via = match self.endpoint.inner.get_via(None, None) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(?key, "failed to create Via header: {:?}", e);
+                if let Err(e) = tx.reply(rsip::StatusCode::ServerInternalError).await {
+                    warn!("error replying to request: {:?}", e);
+                }
+                return Ok(());
+            }
+        };
+        headers.insert(0, via.into());
+        let forwarded_request = rsip::Request {
+            method: tx.original.method,
+            uri: target_uri,
+            version: tx.original.version.clone(),
+            headers: headers.into(),
+            body: tx.original.body.clone(),
+        };
+
+        let client_key = rsipstack::transaction::key::TransactionKey::from_request(
+            &forwarded_request,
+            rsipstack::transaction::key::TransactionRole::Client,
+        );
+        let client_key = match client_key {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(?key, "failed to create client transaction key: {:?}", e);
+                if let Err(e) = tx.reply(rsip::StatusCode::ServerInternalError).await {
+                    warn!("error replying to request: {:?}", e);
+                }
+                return Ok(());
+            }
+        };
+
+        let mut client_tx = Transaction::new_client(
+            client_key,
+            forwarded_request,
+            self.endpoint.inner.clone(),
+            None,
+        );
+        if let Err(e) = client_tx.send().await {
+            warn!(?key, "failed to send forwarded REGISTER: {:?}", e);
+            if let Err(e) = tx.reply(rsip::StatusCode::ServiceUnavailable).await {
+                warn!("error replying to request: {:?}", e);
+            }
+            return Ok(());
+        }
+
+        while let Some(msg) = client_tx.receive().await {
+            match msg {
+                rsip::SipMessage::Response(resp) => {
+                    if let Err(e) = tx
+                        .reply_with(
+                            resp.status_code.clone(),
+                            resp.headers.into(),
+                            Some(resp.body),
+                        )
+                        .await
+                    {
+                        warn!("error forwarding response: {:?}", e);
+                    }
+                    if resp.status_code != rsip::StatusCode::Trying {
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
+        return Ok(());
     }
 }
 
