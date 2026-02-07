@@ -617,6 +617,27 @@ impl AppStateInner {
         };
 
         let mut headers: Vec<rsip::Header> = tx.original.headers.clone().into();
+        // Decrement Max-Forwards header
+        let mut max_forwards_found = false;
+        for header in headers.iter_mut() {
+            if let rsip::Header::MaxForwards(mf) = header {
+                let current_value: u32 = mf.num().unwrap_or(70);
+                if current_value == 0 {
+                    warn!(?key, "Max-Forwards is 0, rejecting request");
+                    if let Err(e) = tx.reply(rsip::StatusCode::TooManyHops).await {
+                        warn!("error replying to request: {:?}", e);
+                    }
+                    return Ok(());
+                }
+                *header = rsip::Header::MaxForwards((current_value - 1).into());
+                max_forwards_found = true;
+                break;
+            }
+        }
+        if !max_forwards_found {
+            headers.push(rsip::Header::MaxForwards(69.into()));
+        }
+
         // Add Via header for this proxy
         let via = match self.endpoint.inner.get_via(None, None) {
             Ok(v) => v,
