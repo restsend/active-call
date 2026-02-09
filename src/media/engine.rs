@@ -257,8 +257,10 @@ impl StreamEngine {
         let (tx, rx) = mpsc::unbounded_channel();
         let new_handle = SynthesisHandle::new(tx, play_id.clone(), ssrc);
         let tts_client = engine.create_tts_client(streaming, tts_option).await?;
+        let sample_rate = tts_option.samplerate.unwrap_or(16000) as u32;
         let tts_track = TtsTrack::new(track_id, session_id, streaming, play_id, rx, tts_client)
             .with_ssrc(ssrc)
+            .with_sample_rate(sample_rate)
             .with_cancel_token(cancel_token);
         Ok((new_handle, Box::new(tts_track) as Box<dyn Track>))
     }
