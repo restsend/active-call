@@ -27,11 +27,8 @@ impl Default for TrackConfig {
         Self {
             #[cfg(feature = "opus")]
             codec: CodecType::Opus,
-            #[cfg(feature = "opus")]
-            samplerate: 48000,
             #[cfg(not(feature = "opus"))]
             codec: CodecType::G722,
-            #[cfg(not(feature = "opus"))]
             samplerate: 16000,
             channels: 1,
             ptime: Duration::from_millis(20),
