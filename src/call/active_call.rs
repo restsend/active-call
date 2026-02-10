@@ -2021,6 +2021,14 @@ impl ActiveCall {
         self.call_state.write().await.moh = None;
 
         if let Some(track) = rtp_track_to_setup {
+            info!(
+                session_id = self.session_id,
+                track_id, "Stopping MOH and setting up RTP track"
+            );
+            self.media_stream
+                .remove_track(&self.server_side_track_id, false)
+                .await;
+
             self.setup_track_with_stream(&call_option, track)
                 .await
                 .map_err(|e| rsipstack::Error::Error(e.to_string()))?;
