@@ -477,8 +477,6 @@ impl TtsTask {
             return;
         }
 
-        let emit_entry = self.get_emit_entry_mut(assume_seq);
-
         let text = strip_emoji_chars(text);
 
         // if text is empty:
@@ -486,12 +484,14 @@ impl TtsTask {
         // in non streaming mode, set entry[seq] finished to true
         if text.is_empty() {
             if !streaming {
+                let emit_entry = self.get_emit_entry_mut(assume_seq);
                 emit_entry.map(|entry| entry.finished = true);
             }
             return;
         }
 
         if cmd.base64 {
+            let emit_entry = self.get_emit_entry_mut(assume_seq);
             match BASE64_STANDARD.decode(text) {
                 Ok(bytes) => {
                     emit_entry.map(|entry| {
@@ -1406,6 +1406,217 @@ mod tests {
             received_bytes > 4000,
             "Should play appended data even after Finished event. Received: {}",
             received_bytes
+        );
+
+        cancel_token.cancel();
+    }
+
+    /// Test for Issue #51: TTS playback stalled in non-streaming mode
+    /// This test verifies that multiple TTS messages in non-streaming mode
+    /// don't get stuck due to premature emit_q entry creation.
+    #[tokio::test]
+    async fn test_non_streaming_multiple_messages_no_stall() {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
+        let (session_event_tx, _session_event_rx) = broadcast::channel(10);
+
+        let client = Box::new(MockClient::new(event_rx));
+        let cancel_token = CancellationToken::new();
+
+        let sample_rate = 8000;
+        let ptime = Duration::from_millis(20);
+        let min_buffer_size = (sample_rate as usize * 2 * 200) / 1000; // 3200 bytes for 200ms
+
+        let task = TtsTask {
+            play_id: Some("test_issue_51".to_string()),
+            track_id: "track_issue_51".to_string(),
+            session_id: "session_issue_51".to_string(),
+            client,
+            command_rx: cmd_rx,
+            event_sender: session_event_tx,
+            packet_sender: packet_tx,
+            cancel_token: cancel_token.clone(),
+            processor_chain: ProcessorChain::new(sample_rate),
+            cache_enabled: false,
+            sample_rate,
+            ptime,
+            cache_buffer: BytesMut::new(),
+            emit_q: VecDeque::new(),
+            metadatas: HashMap::new(),
+            cur_seq: 0,
+            streaming: false, // Non-streaming mode
+            graceful: Arc::new(AtomicBool::new(false)),
+            ssrc: 7777,
+            buffering_state: Some(Instant::now()), // Initial buffering
+            min_buffer_size,
+            max_buffer_wait: Duration::from_millis(500),
+        };
+
+        let event_tx_clone = event_tx.clone();
+        tokio::spawn(async move {
+            task.run().await.unwrap();
+        });
+
+        // Simulate the exact issue scenario:
+        // 1. First message arrives and plays correctly
+        cmd_tx
+            .send(SynthesisCommand {
+                text: "First message".to_string(),
+                speaker: None,
+                play_id: Some("test_issue_51".to_string()),
+                streaming: false,
+                base64: false,
+                end_of_stream: false,
+                cache_key: None,
+                option: crate::synthesis::SynthesisOption::default(),
+            })
+            .unwrap();
+
+        // Wait a bit to simulate synthesis starting
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send audio chunks for first message (seq=0)
+        event_tx
+            .send((
+                Some(0),
+                Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![1u8; 4000]))),
+            ))
+            .unwrap();
+        event_tx
+            .send((Some(0), Ok(SynthesisEvent::Finished)))
+            .unwrap();
+
+        // Wait for first message to start playing
+        let mut first_message_received = false;
+        let timeout = tokio::time::sleep(Duration::from_millis(800));
+        tokio::pin!(timeout);
+        loop {
+            tokio::select! {
+                Some(frame) = packet_rx.recv() => {
+                    if let Samples::PCM { samples } = frame.samples {
+                        if samples.len() > 0 {
+                            first_message_received = true;
+                            break;
+                        }
+                    }
+                }
+                _ = &mut timeout => break,
+            }
+        }
+        assert!(first_message_received, "First message should play");
+
+        // Drain remaining packets from first message
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        while packet_rx.try_recv().is_ok() {}
+
+        // 2. Second message arrives - THIS IS THE KEY TEST CASE
+        // Before the fix, emit_q entry would be created immediately,
+        // causing underrun detection before any audio chunks arrive
+        cmd_tx
+            .send(SynthesisCommand {
+                text: "Second message".to_string(),
+                speaker: None,
+                play_id: Some("test_issue_51".to_string()),
+                streaming: false,
+                base64: false,
+                end_of_stream: false,
+                cache_key: None,
+                option: crate::synthesis::SynthesisOption::default(),
+            })
+            .unwrap();
+
+        // Simulate synthesis delay (100ms) - synthesis hasn't produced chunks yet
+        // During this time, emit loop runs multiple times
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Now synthesis produces chunks for second message (seq=1)
+        event_tx_clone
+            .send((
+                Some(1),
+                Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![2u8; 4000]))),
+            ))
+            .unwrap();
+        event_tx_clone
+            .send((Some(1), Ok(SynthesisEvent::Finished)))
+            .unwrap();
+
+        // Verify second message plays (not stuck in buffering)
+        let mut second_message_received = false;
+        let timeout = tokio::time::sleep(Duration::from_millis(1000));
+        tokio::pin!(timeout);
+
+        let mut received_bytes = 0;
+        loop {
+            tokio::select! {
+                Some(frame) = packet_rx.recv() => {
+                    if let Samples::PCM { samples } = frame.samples {
+                        if samples.len() > 0 {
+                            received_bytes += samples.len() * 2;
+                            second_message_received = true;
+                        }
+                    }
+                }
+                _ = &mut timeout => break,
+            }
+        }
+
+        assert!(
+            second_message_received,
+            "Second message should play and not get stuck in buffering loop"
+        );
+        assert!(
+            received_bytes >= 3000,
+            "Should receive substantial audio data from second message, got {} bytes",
+            received_bytes
+        );
+
+        // 3. Third message to ensure pattern works for multiple messages
+        cmd_tx
+            .send(SynthesisCommand {
+                text: "Third message".to_string(),
+                speaker: None,
+                play_id: Some("test_issue_51".to_string()),
+                streaming: false,
+                base64: false,
+                end_of_stream: false,
+                cache_key: None,
+                option: crate::synthesis::SynthesisOption::default(),
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        event_tx_clone
+            .send((
+                Some(2),
+                Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![3u8; 4000]))),
+            ))
+            .unwrap();
+        event_tx_clone
+            .send((Some(2), Ok(SynthesisEvent::Finished)))
+            .unwrap();
+
+        let mut third_message_received = false;
+        let timeout = tokio::time::sleep(Duration::from_millis(1000));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                Some(frame) = packet_rx.recv() => {
+                    if let Samples::PCM { samples } = frame.samples {
+                        if samples.len() > 0 {
+                            third_message_received = true;
+                        }
+                    }
+                }
+                _ = &mut timeout => break,
+            }
+        }
+
+        assert!(
+            third_message_received,
+            "Third message should also play without issues"
         );
 
         cancel_token.cancel();
