@@ -76,7 +76,7 @@ impl DtmfPayload {
 impl DtmfDetector {
     pub fn new() -> Self {
         Self {
-            last_event: AtomicU8::new(0),
+            last_event: AtomicU8::new(0xFF),
             last_duration: AtomicU16::new(0),
         }
     }
@@ -226,5 +226,32 @@ mod tests {
             let digit4 = detector.detect_rtp(101, &payload4);
             assert_eq!(digit4, Some("6".to_string()));
         }
+    }
+
+    #[test]
+    fn test_dtmf_digit_0_first_press() {
+        let detector = DtmfDetector::new();
+
+        let payload = [DTMF_EVENT_0, 0x80, 0, 160]; // Event 0, end bit set
+        let digit = detector.detect_rtp(101, &payload);
+        assert_eq!(
+            digit,
+            Some("0".to_string()),
+            "First press of digit '0' should be recognized"
+        );
+
+        // Duplicate should be ignored
+        let payload2 = [DTMF_EVENT_0, 0x80, 0, 160]; // Same event, same duration
+        let digit2 = detector.detect_rtp(101, &payload2);
+        assert_eq!(digit2, None, "Duplicate DTMF should be filtered out");
+
+        // New press with smaller duration (new key press started) should be detected
+        let payload3 = [DTMF_EVENT_0, 0x80, 0, 80]; // Smaller duration = new press
+        let digit3 = detector.detect_rtp(101, &payload3);
+        assert_eq!(
+            digit3,
+            Some("0".to_string()),
+            "Second press with smaller duration should be recognized as new press"
+        );
     }
 }
