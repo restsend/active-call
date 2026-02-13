@@ -362,9 +362,8 @@ async fn test_xml_tools_and_sentence_splitting() -> Result<()> {
     // 1. TTS "Hello! "
     // 2. Refer "sip:123"
     // 3. TTS " How are you? "
-    // 4. Empty TTS with auto_hangup
-    // 5. Hangup
-    assert_eq!(commands.len(), 5);
+    // 4. Empty TTS with auto_hangup (no separate Hangup command anymore)
+    assert_eq!(commands.len(), 4);
 
     if let Command::Tts {
         text,
@@ -395,12 +394,13 @@ async fn test_xml_tools_and_sentence_splitting() -> Result<()> {
 
         if let Command::Tts {
             auto_hangup: Some(true),
+            end_of_stream: Some(true),
             ..
         } = &commands[3]
         {
-            // Ok
+            // Good - auto_hangup TTS instead of separate Hangup command
         } else {
-            panic!("Expected Tts with auto_hangup");
+            panic!("Expected Tts with auto_hangup and end_of_stream");
         }
     } else {
         panic!("Expected Tts");
@@ -1138,8 +1138,8 @@ async fn test_set_var_with_sip_headers() {
     );
     handler.call = Some(active_call.clone());
 
-    // Simulate LLM setting _sip_headers for BYE
-    let mut buffer = r#"<set_var key="_sip_headers" value='{"X-Hangup-Reason":"completed","X-Duration":"120"}' />"#.to_string();
+    // Simulate LLM setting _hangup_headers for BYE
+    let mut buffer = r#"<set_var key="_hangup_headers" value='{"X-Hangup-Reason":"completed","X-Duration":"120"}' />"#.to_string();
 
     handler
         .extract_streaming_commands(&mut buffer, "p_id", true)
@@ -1157,9 +1157,9 @@ async fn test_set_var_with_sip_headers() {
     // Verify original header still exists
     assert_eq!(extras.get("X-CID").unwrap(), &serde_json::json!("123456"));
 
-    // Verify new _sip_headers was set
-    assert!(extras.contains_key("_sip_headers"));
-    let headers_value = extras.get("_sip_headers").unwrap();
+    // Verify new _hangup_headers was set
+    assert!(extras.contains_key("_hangup_headers"));
+    let headers_value = extras.get("_hangup_headers").unwrap();
     assert_eq!(
         headers_value,
         &serde_json::Value::String(

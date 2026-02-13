@@ -62,7 +62,7 @@ LLM 可以在对话过程中动态设置变量：
 
 #### 批量设置（不推荐）
 ```xml
-<set_var key="_sip_headers" value='{"X-Key1":"val1","X-Key2":"val2"}' />
+<set_var key="_hangup_headers" value='{"X-Key1":"val1","X-Key2":"val2"}' />
 ```
 
 ### 4. BYE Headers 渲染
@@ -253,7 +253,7 @@ sip:
 
 4. **性能考虑**
    - `set_var` 是轻量级操作，可以频繁使用
-   - 避免使用 `_sip_headers` 批量设置，优先使用单个 `set_var`
+   - 避免使用 `_hangup_headers` 批量设置，优先使用单个 `set_var`
 
 5. **为什么之前没有发现问题**
    - 在引入 `sip` 字典之前，代码中从未直接在模板中使用过 `{{ X-Header-Name }}` 这样的语法

@@ -236,7 +236,7 @@ LLM: 已为您创建工单，工单号 12345 <set_var key="ticket_id" value="123
 #### 3. 设置 BYE Headers（用于 SIP）
 
 ```markdown
-LLM: 通话结束，感谢您的来电 <set_var key="_sip_headers" value='{"X-Hangup-Reason":"normal","X-Duration":"180"}' />
+LLM: 通话结束，感谢您的来电 <set_var key="_hangup_headers" value='{"X-Hangup-Reason":"normal","X-Duration":"180"}' />
 ```
 
 ### 特性说明
@@ -362,10 +362,10 @@ LLM: 感谢您的好评 <set_var key="user_rating" value="5" /> <set_var key="ha
 
 ### 直接设置 Headers
 
-也可以直接设置 `_sip_headers` 变量：
+也可以直接设置 `_hangup_headers` 变量：
 
 ```xml
-<set_var key="_sip_headers" value='{"X-Custom":"value","X-Status":"completed"}' />
+<set_var key="_hangup_headers" value='{"X-Custom":"value","X-Status":"completed"}' />
 ```
 
 > 注意：直接设置会覆盖模板渲染结果

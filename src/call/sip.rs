@@ -367,7 +367,7 @@ impl DialogStateReceiverGuard {
         {
             let state = states.call_state.read().await;
             if let Some(extras) = &state.extras {
-                if let Some(h_val) = extras.get("_sip_headers") {
+                if let Some(h_val) = extras.get("_hangup_headers") {
                     if let Ok(headers_map) =
                         serde_json::from_value::<HashMap<String, String>>(h_val.clone())
                     {

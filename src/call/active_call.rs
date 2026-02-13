@@ -1121,7 +1121,7 @@ impl ActiveCall {
             {
                 let mut state = self.call_state.write().await;
                 let mut extras = state.extras.take().unwrap_or_default();
-                extras.insert("_sip_headers".to_string(), h_val.clone());
+                extras.insert("_hangup_headers".to_string(), h_val.clone());
                 state.extras = Some(extras);
             }
 
@@ -1131,7 +1131,19 @@ impl ActiveCall {
                 let params = pending
                     .entry(self.session_id.clone())
                     .or_insert_with(std::collections::HashMap::new);
-                params.insert("_sip_headers".to_string(), h_val);
+                params.insert("_hangup_headers".to_string(), h_val);
+            }
+        } else {
+            // Check if headers are in active call state, if so, ensure they are in pending_params
+            let state = self.call_state.read().await;
+            if let Some(extras) = &state.extras {
+                if let Some(h_val) = extras.get("_hangup_headers") {
+                    let mut pending = self.app_state.pending_params.lock().await;
+                    let params = pending
+                        .entry(self.session_id.clone())
+                        .or_insert_with(std::collections::HashMap::new);
+                    params.insert("_hangup_headers".to_string(), h_val.clone());
+                }
             }
         }
 

@@ -227,7 +227,7 @@ impl InvitationHandler for PlaybookInvitationHandler {
                         let mut params = app_state.pending_params.lock().await;
                         // remove returns the map of extras for this session
                         if let Some(extras) = params.remove(&session_id) {
-                            if let Some(h_val) = extras.get("_sip_headers") {
+                            if let Some(h_val) = extras.get("_hangup_headers") {
                                 if let Ok(h_map) = serde_json::from_value::<
                                     std::collections::HashMap<String, String>,
                                 >(h_val.clone())

@@ -748,6 +748,16 @@ impl LlmHandler {
 
         // Process pending hangup after all other commands (especially set_var)
         if let Some((prefix, _)) = pending_hangup {
+            let headers = self.render_sip_headers().await;
+
+            if let Some(call) = &self.call {
+                let h_val = serde_json::to_value(&headers).unwrap_or_default();
+                let mut state = call.call_state.write().await;
+                let mut extras = state.extras.take().unwrap_or_default();
+                extras.insert("_hangup_headers".to_string(), h_val);
+                state.extras = Some(extras);
+            }
+
             if !prefix.trim().is_empty() {
                 let mut cmd =
                     self.create_tts_command_with_id(prefix, play_id.to_string(), Some(true));
@@ -768,13 +778,6 @@ impl LlmHandler {
                 self.is_hanging_up = true;
                 commands.push(cmd);
             }
-
-            let headers = self.render_sip_headers().await;
-            commands.push(Command::Hangup {
-                reason: Some("AI Hangup".to_string()),
-                initiator: Some("ai".to_string()),
-                headers,
-            });
 
             return commands;
         }
