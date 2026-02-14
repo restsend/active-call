@@ -243,9 +243,12 @@ impl TtsTask {
                                 let elapsed_ms = elapsed.as_millis();
                                 if elapsed_ms > 100 {
                                      // Underrun detection
+                                     // In streaming mode, this is a real issue that needs attention
+                                     // In non-streaming mode, this is expected at the end of playback
                                     if elapsed_ms > 200 && last_chunk_recv_time.elapsed().as_millis() > 500 {
                                         if elapsed_ms % 500 < 50 {
-                                            warn!(
+                                            if self.streaming {
+                                                warn!(
                                                     session_id = %self.session_id,
                                                     track_id = %self.track_id,
                                                     play_id = ?self.play_id,
@@ -254,8 +257,20 @@ impl TtsTask {
                                                     stall_duration_ms = last_chunk_recv_time.elapsed().as_millis(),
                                                     "tts playback stalled: waiting for more chunks (potential silence)"
                                                 );
+                                            } else {
+                                                debug!(
+                                                    session_id = %self.session_id,
+                                                    track_id = %self.track_id,
+                                                    play_id = ?self.play_id,
+                                                    cur_seq = self.cur_seq,
+                                                    elapsed_ms,
+                                                    stall_duration_ms = last_chunk_recv_time.elapsed().as_millis(),
+                                                    "tts playback tail: buffer empty at end of message (non-streaming)"
+                                                );
+                                            }
                                         }
-                                    } else if elapsed_ms % 500 < 50 {
+                                    } else if elapsed_ms % 500 < 50 && self.streaming {
+                                        // Only log underrun in streaming mode
                                         info!(
                                             session_id = %self.session_id,
                                             track_id = %self.track_id,
@@ -1617,6 +1632,379 @@ mod tests {
         assert!(
             third_message_received,
             "Third message should also play without issues"
+        );
+
+        cancel_token.cancel();
+    }
+
+    /// Test non-streaming mode: buffer empty at tail is normal (should not block)
+    /// This test simulates the exact scenario from Issue #51 logs:
+    /// - All audio chunks arrive quickly
+    /// - Playback takes longer than chunk arrival time
+    /// - Buffer becomes empty near the end (tail) of playback
+    /// - This is EXPECTED behavior, should not cause functional issues
+    #[tokio::test]
+    async fn test_non_streaming_buffer_empty_at_tail() {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
+        let (session_event_tx, _session_event_rx) = broadcast::channel(10);
+
+        let client = Box::new(MockClient::new(event_rx));
+        let cancel_token = CancellationToken::new();
+
+        let sample_rate = 8000;
+        let ptime = Duration::from_millis(20);
+        let min_buffer_size = (sample_rate as usize * 2 * 200) / 1000;
+
+        let task = TtsTask {
+            play_id: Some("tail_test".to_string()),
+            track_id: "track_tail".to_string(),
+            session_id: "session_tail".to_string(),
+            client,
+            command_rx: cmd_rx,
+            event_sender: session_event_tx,
+            packet_sender: packet_tx,
+            cancel_token: cancel_token.clone(),
+            processor_chain: ProcessorChain::new(sample_rate),
+            cache_enabled: false,
+            sample_rate,
+            ptime,
+            cache_buffer: BytesMut::new(),
+            emit_q: VecDeque::new(),
+            metadatas: HashMap::new(),
+            cur_seq: 0,
+            streaming: false, // Non-streaming mode
+            graceful: Arc::new(AtomicBool::new(false)),
+            ssrc: 8888,
+            buffering_state: Some(Instant::now()),
+            min_buffer_size,
+            max_buffer_wait: Duration::from_millis(500),
+        };
+
+        tokio::spawn(async move {
+            task.run().await.unwrap();
+        });
+
+        // Send a TTS command
+        cmd_tx
+            .send(SynthesisCommand {
+                text: "Test message with tail buffer scenario".to_string(),
+                speaker: None,
+                play_id: Some("tail_test".to_string()),
+                streaming: false,
+                base64: false,
+                end_of_stream: false,
+                cache_key: None,
+                option: crate::synthesis::SynthesisOption::default(),
+            })
+            .unwrap();
+
+        // Wait briefly, then send audio data
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Send 8 seconds worth of audio data quickly (simulating fast TTS response)
+        // 8000 Hz * 2 bytes * 8 seconds = 128,000 bytes
+        for _ in 0..16 {
+            event_tx
+                .send((
+                    Some(0),
+                    Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![0u8; 8000]))),
+                ))
+                .unwrap();
+        }
+
+        // Mark as finished (all data has arrived)
+        event_tx
+            .send((Some(0), Ok(SynthesisEvent::Finished)))
+            .unwrap();
+
+        // Now consume the audio packets
+        // Audio should play completely without blocking at the tail
+        let mut total_received_bytes = 0;
+        let timeout = tokio::time::sleep(Duration::from_secs(12)); // Longer than audio duration
+        tokio::pin!(timeout);
+
+        let mut packet_count = 0;
+        loop {
+            tokio::select! {
+                Some(frame) = packet_rx.recv() => {
+                    if let Samples::PCM { samples } = frame.samples {
+                        total_received_bytes += samples.len() * 2;
+                        packet_count += 1;
+                    }
+                }
+                _ = &mut timeout => {
+                    break;
+                }
+            }
+
+            // Break when we've received all expected data
+            if total_received_bytes >= 128000 {
+                break;
+            }
+        }
+
+        // Verify all audio was played
+        assert!(
+            total_received_bytes >= 120000,
+            "Should receive most/all audio data even with tail buffer empty. Got {} bytes",
+            total_received_bytes
+        );
+
+        assert!(packet_count > 0, "Should have received audio packets");
+
+        cancel_token.cancel();
+    }
+
+    /// Test streaming mode: real buffer underrun should be handled properly
+    /// In streaming mode, if chunks stop arriving, it's a real issue
+    #[tokio::test]
+    async fn test_streaming_mode_real_underrun_handling() {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (_cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
+        let (session_event_tx, _session_event_rx) = broadcast::channel(10);
+
+        let client = Box::new(MockClient::new(event_rx));
+        let cancel_token = CancellationToken::new();
+
+        let sample_rate = 8000;
+        let ptime = Duration::from_millis(20);
+        let min_buffer_size = (sample_rate as usize * 2 * 200) / 1000;
+
+        let task = TtsTask {
+            play_id: Some("stream_underrun".to_string()),
+            track_id: "track_underrun".to_string(),
+            session_id: "session_underrun".to_string(),
+            client,
+            command_rx: cmd_rx,
+            event_sender: session_event_tx,
+            packet_sender: packet_tx,
+            cancel_token: cancel_token.clone(),
+            processor_chain: ProcessorChain::new(sample_rate),
+            cache_enabled: false,
+            sample_rate,
+            ptime,
+            cache_buffer: BytesMut::new(),
+            emit_q: VecDeque::new(),
+            metadatas: HashMap::new(),
+            cur_seq: 0,
+            streaming: true, // Streaming mode
+            graceful: Arc::new(AtomicBool::new(false)),
+            ssrc: 9999,
+            buffering_state: Some(Instant::now()),
+            min_buffer_size,
+            max_buffer_wait: Duration::from_millis(500),
+        };
+
+        tokio::spawn(async move {
+            task.run().await.unwrap();
+        });
+
+        // Send initial chunk to get started
+        event_tx
+            .send((
+                None,
+                Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![1u8; 5000]))),
+            ))
+            .unwrap();
+
+        // Wait for buffering to release and audio to start playing
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut received_audio = false;
+        let timeout = tokio::time::sleep(Duration::from_millis(300));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                Some(frame) = packet_rx.recv() => {
+                    if let Samples::PCM { samples } = frame.samples {
+                        if samples.len() > 0 {
+                            received_audio = true;
+                            break;
+                        }
+                    }
+                }
+                _ = &mut timeout => break,
+            }
+        }
+
+        assert!(received_audio, "Streaming mode should play initial audio");
+
+        // Now simulate underrun: no more chunks arrive
+        // System should handle this gracefully without crashing
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // Send more data after underrun
+        event_tx
+            .send((
+                None,
+                Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![2u8; 3000]))),
+            ))
+            .unwrap();
+
+        // Should recover and continue playing
+        let mut recovered = false;
+        let timeout = tokio::time::sleep(Duration::from_millis(800));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                Some(frame) = packet_rx.recv() => {
+                    if let Samples::PCM { samples } = frame.samples {
+                        if samples.len() > 0 {
+                            recovered = true;
+                        }
+                    }
+                }
+                _ = &mut timeout => break,
+            }
+        }
+
+        assert!(
+            recovered,
+            "Should recover from underrun and continue playing"
+        );
+
+        cancel_token.cancel();
+    }
+
+    /// Test that finished flag is properly set in non-streaming mode
+    /// This ensures the fix doesn't break the finished detection logic
+    #[tokio::test]
+    async fn test_non_streaming_finished_flag_properly_set() {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
+        let (session_event_tx, _session_event_rx) = broadcast::channel(10);
+
+        let client = Box::new(MockClient::new(event_rx));
+        let cancel_token = CancellationToken::new();
+
+        let sample_rate = 8000;
+        let ptime = Duration::from_millis(20);
+        let min_buffer_size = (sample_rate as usize * 2 * 200) / 1000;
+
+        let task = TtsTask {
+            play_id: Some("finished_test".to_string()),
+            track_id: "track_finished".to_string(),
+            session_id: "session_finished".to_string(),
+            client,
+            command_rx: cmd_rx,
+            event_sender: session_event_tx,
+            packet_sender: packet_tx,
+            cancel_token: cancel_token.clone(),
+            processor_chain: ProcessorChain::new(sample_rate),
+            cache_enabled: false,
+            sample_rate,
+            ptime,
+            cache_buffer: BytesMut::new(),
+            emit_q: VecDeque::new(),
+            metadatas: HashMap::new(),
+            cur_seq: 0,
+            streaming: false,
+            graceful: Arc::new(AtomicBool::new(false)),
+            ssrc: 1010,
+            buffering_state: Some(Instant::now()),
+            min_buffer_size,
+            max_buffer_wait: Duration::from_millis(500),
+        };
+
+        let event_tx_clone = event_tx.clone();
+        tokio::spawn(async move {
+            task.run().await.unwrap();
+        });
+
+        // First message
+        cmd_tx
+            .send(SynthesisCommand {
+                text: "Message one".to_string(),
+                speaker: None,
+                play_id: Some("finished_test".to_string()),
+                streaming: false,
+                base64: false,
+                end_of_stream: false,
+                cache_key: None,
+                option: crate::synthesis::SynthesisOption::default(),
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send chunks and finish
+        event_tx
+            .send((
+                Some(0),
+                Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![1u8; 4000]))),
+            ))
+            .unwrap();
+        event_tx
+            .send((Some(0), Ok(SynthesisEvent::Finished)))
+            .unwrap();
+
+        // Wait for playback to complete
+        let timeout = tokio::time::sleep(Duration::from_millis(600));
+        tokio::pin!(timeout);
+        loop {
+            tokio::select! {
+                Some(_) = packet_rx.recv() => {}
+                _ = &mut timeout => break,
+            }
+        }
+
+        // Drain packets
+        while packet_rx.try_recv().is_ok() {}
+
+        // Second message should work (verifies cur_seq increment worked)
+        cmd_tx
+            .send(SynthesisCommand {
+                text: "Message two".to_string(),
+                speaker: None,
+                play_id: Some("finished_test".to_string()),
+                streaming: false,
+                base64: false,
+                end_of_stream: false,
+                cache_key: None,
+                option: crate::synthesis::SynthesisOption::default(),
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        event_tx_clone
+            .send((
+                Some(1),
+                Ok(SynthesisEvent::AudioChunk(Bytes::from(vec![2u8; 4000]))),
+            ))
+            .unwrap();
+        event_tx_clone
+            .send((Some(1), Ok(SynthesisEvent::Finished)))
+            .unwrap();
+
+        // Verify second message plays
+        let mut second_msg_received = false;
+        let timeout = tokio::time::sleep(Duration::from_millis(600));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                Some(frame) = packet_rx.recv() => {
+                    if let Samples::PCM { samples } = frame.samples {
+                        if samples.len() > 0 {
+                            second_msg_received = true;
+                            break;
+                        }
+                    }
+                }
+                _ = &mut timeout => break,
+            }
+        }
+
+        assert!(
+            second_msg_received,
+            "Second message should play after first finishes"
         );
 
         cancel_token.cancel();
