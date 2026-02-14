@@ -291,6 +291,35 @@ impl DialogStateReceiverGuard {
                                 || _req.method == rsip::Method::Update)
                         {
                             info!(session_id=states.session_id, %dialog_id, method=%_req.method, "handling re-invite/update offer");
+
+                            // Detect hold state from SDP
+                            let is_on_hold =
+                                crate::media::negotiate::detect_hold_state_from_sdp(&sdp_str);
+                            info!(session_id=states.session_id, %dialog_id, is_on_hold=%is_on_hold, "detected hold state from re-invite SDP");
+
+                            // Update media stream hold state
+                            if is_on_hold {
+                                states
+                                    .media_stream
+                                    .hold_track(Some(states.track_id.clone()))
+                                    .await;
+                            } else {
+                                states
+                                    .media_stream
+                                    .resume_track(Some(states.track_id.clone()))
+                                    .await;
+                            }
+
+                            // Emit hold event
+                            states
+                                .event_sender
+                                .send(crate::event::SessionEvent::Hold {
+                                    track_id: states.track_id.clone(),
+                                    timestamp: crate::media::get_timestamp(),
+                                    on_hold: is_on_hold,
+                                })
+                                .ok();
+
                             match states
                                 .media_stream
                                 .handshake(&states.track_id, sdp_str.to_string(), None)
@@ -306,6 +335,38 @@ impl DialogStateReceiverGuard {
                             }
                         } else {
                             info!(session_id=states.session_id, %dialog_id, "updating remote description:\n{}", sdp_str);
+
+                            // Also check hold state for non-INVITE/UPDATE messages with SDP
+                            let is_on_hold =
+                                crate::media::negotiate::detect_hold_state_from_sdp(&sdp_str);
+                            if is_on_hold {
+                                states
+                                    .media_stream
+                                    .hold_track(Some(states.track_id.clone()))
+                                    .await;
+                                states
+                                    .event_sender
+                                    .send(crate::event::SessionEvent::Hold {
+                                        track_id: states.track_id.clone(),
+                                        timestamp: crate::media::get_timestamp(),
+                                        on_hold: true,
+                                    })
+                                    .ok();
+                            } else {
+                                states
+                                    .media_stream
+                                    .resume_track(Some(states.track_id.clone()))
+                                    .await;
+                                states
+                                    .event_sender
+                                    .send(crate::event::SessionEvent::Hold {
+                                        track_id: states.track_id.clone(),
+                                        timestamp: crate::media::get_timestamp(),
+                                        on_hold: false,
+                                    })
+                                    .ok();
+                            }
+
                             states
                                 .media_stream
                                 .update_remote_description(&states.track_id, &sdp_str.to_string())

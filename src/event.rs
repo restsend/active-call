@@ -120,6 +120,11 @@ pub enum SessionEvent {
         timestamp: u64,
         digit: String,
     },
+    Hold {
+        track_id: String,
+        timestamp: u64,
+        on_hold: bool,
+    },
     TrackStart {
         track_id: String,
         timestamp: u64,

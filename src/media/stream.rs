@@ -1,5 +1,6 @@
 use crate::event::{EventSender, SessionEvent};
 use crate::media::dtmf::DtmfDetector;
+use crate::media::volume_control::HoldProcessor;
 use crate::media::{AudioFrame, Samples, TrackId};
 use crate::media::{
     processor::Processor,
@@ -267,6 +268,30 @@ impl MediaStream {
         }
     }
 
+    pub async fn hold_track(&self, id: Option<TrackId>) {
+        if let Some(id) = id {
+            if let Some((track, _)) = self.tracks.lock().await.get_mut(&id) {
+                HoldTrack::hold_track(track.as_mut());
+            }
+        } else {
+            for (track, _) in self.tracks.lock().await.values_mut() {
+                HoldTrack::hold_track(track.as_mut());
+            }
+        }
+    }
+
+    pub async fn resume_track(&self, id: Option<TrackId>) {
+        if let Some(id) = id {
+            if let Some((track, _)) = self.tracks.lock().await.get_mut(&id) {
+                HoldTrack::resume_track(track.as_mut());
+            }
+        } else {
+            for (track, _) in self.tracks.lock().await.values_mut() {
+                HoldTrack::resume_track(track.as_mut());
+            }
+        }
+    }
+
     pub async fn suppress_forwarding(&self, track_id: &TrackId) {
         self.suppressed_sources
             .lock()
@@ -448,5 +473,25 @@ impl Processor for MuteProcessor {
             _ => {}
         }
         Ok(())
+    }
+}
+
+pub struct HoldTrack;
+
+impl HoldTrack {
+    pub fn hold_track(track: &mut dyn Track) {
+        let chain = track.processor_chain();
+        // Remove existing processor if present
+        chain.remove_processor::<HoldProcessor>();
+        // Add a new processor with hold state set to true
+        let processor = HoldProcessor::new();
+        processor.set_hold(true);
+        chain.insert_processor(Box::new(processor));
+    }
+
+    pub fn resume_track(track: &mut dyn Track) {
+        let chain = track.processor_chain();
+        // Simply remove the hold processor to resume normal operation
+        chain.remove_processor::<HoldProcessor>();
     }
 }

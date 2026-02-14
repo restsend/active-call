@@ -118,13 +118,17 @@ impl HoldProcessor {
 impl Processor for HoldProcessor {
     fn process_frame(&mut self, frame: &mut AudioFrame) -> Result<()> {
         if self.is_on_hold() {
-            // When on hold, replace audio with silence or hold music
+            // When on hold, replace audio with silence (set all samples to 0)
+            // IMPORTANT: We still pass the frame through to subsequent processors (e.g., ASR)
+            // to maintain stream continuity. ASR needs to receive silence frames to avoid errors.
             if let crate::media::Samples::PCM { samples } = &mut frame.samples {
-                // Replace with silence for now
-                // TODO: Could be enhanced to play hold music
+                // Replace with silence (keep the frame structure intact)
+                // The frame is still sent to ASR and other processors
                 for sample in samples.iter_mut() {
                     *sample = 0;
                 }
+                // Note: Frame continues to flow through processor chain - this is intentional
+                // to prevent ASR and other processors from experiencing stream interruption
             }
         }
         Ok(())

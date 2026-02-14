@@ -242,6 +242,51 @@ pub fn select_peer_media(sdp: &SessionDescription, media_type: &str) -> Option<P
     Some(peer_media)
 }
 
+/// Detects if the SDP indicates a call on hold
+/// According to RFC 3264, a call is on hold if:
+/// - The media direction is "sendonly" or "inactive" (a=sendonly or a=inactive)
+/// - The connection address is set to 0.0.0.0
+pub fn detect_hold_state_from_sdp(sdp_str: &str) -> bool {
+    // Try to parse the SDP
+    let sdp = match SessionDescription::parse(rustrtc::sdp::SdpType::Offer, sdp_str) {
+        Ok(sdp) => sdp,
+        Err(_) => {
+            // If parsing fails, try as Answer
+            match SessionDescription::parse(rustrtc::sdp::SdpType::Answer, sdp_str) {
+                Ok(sdp) => sdp,
+                Err(_) => return false,
+            }
+        }
+    };
+
+    // Check for 0.0.0.0 connection address at session level
+    if let Some(connection) = &sdp.session.connection {
+        if connection.contains("0.0.0.0") {
+            return true;
+        }
+    }
+
+    // Check media sections for hold indicators
+    for media in &sdp.media_sections {
+        // Check connection address in media section
+        if let Some(connection) = &media.connection {
+            if connection.contains("0.0.0.0") {
+                return true;
+            }
+        }
+
+        // Check media direction (rustrtc stores this in the direction field)
+        match media.direction {
+            rustrtc::sdp::Direction::SendOnly | rustrtc::sdp::Direction::Inactive => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use crate::media::negotiate::{prefer_audio_codec, select_peer_media};
@@ -368,6 +413,85 @@ a=rtpmap:101 telephone-event/8000
         assert_eq!(
             media.formats,
             vec!["8".to_string(), "0".to_string(), "101".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_detect_hold_state() {
+        use crate::media::negotiate::detect_hold_state_from_sdp;
+
+        // Test sendonly (on hold)
+        let sdp_sendonly = r#"v=0
+o=- 654321 3 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 RTP/AVP 0
+c=IN IP4 127.0.0.1
+a=sendonly
+a=rtpmap:0 PCMU/8000
+"#;
+        assert!(
+            detect_hold_state_from_sdp(sdp_sendonly),
+            "Should detect sendonly as hold"
+        );
+
+        // Test inactive (on hold)
+        let sdp_inactive = r#"v=0
+o=- 654321 4 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 RTP/AVP 0
+c=IN IP4 127.0.0.1
+a=inactive
+a=rtpmap:0 PCMU/8000
+"#;
+        assert!(
+            detect_hold_state_from_sdp(sdp_inactive),
+            "Should detect inactive as hold"
+        );
+
+        // Test 0.0.0.0 connection (on hold)
+        let sdp_zero_addr = r#"v=0
+o=- 654321 5 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 RTP/AVP 0
+c=IN IP4 0.0.0.0
+a=rtpmap:0 PCMU/8000
+"#;
+        assert!(
+            detect_hold_state_from_sdp(sdp_zero_addr),
+            "Should detect 0.0.0.0 as hold"
+        );
+
+        // Test sendrecv (active, not on hold)
+        let sdp_active = r#"v=0
+o=- 654321 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 RTP/AVP 0
+c=IN IP4 127.0.0.1
+a=sendrecv
+a=rtpmap:0 PCMU/8000
+"#;
+        assert!(
+            !detect_hold_state_from_sdp(sdp_active),
+            "Should detect sendrecv as active (not hold)"
+        );
+
+        // Test recvonly (not on hold from caller perspective)
+        let sdp_recvonly = r#"v=0
+o=- 654321 6 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 RTP/AVP 0
+c=IN IP4 127.0.0.1
+a=recvonly
+a=rtpmap:0 PCMU/8000
+"#;
+        assert!(
+            !detect_hold_state_from_sdp(sdp_recvonly),
+            "Should not detect recvonly as hold"
         );
     }
 }
