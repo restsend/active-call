@@ -371,3 +371,103 @@ async fn test_stream_forward_payload_conversion() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_remove_processor() -> Result<()> {
+    use crate::media::processor::Processor;
+
+    // Define a test processor
+    struct TestProcessor {
+        name: String,
+    }
+
+    impl Processor for TestProcessor {
+        fn process_frame(&mut self, _frame: &mut AudioFrame) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let event_sender = crate::event::create_event_sender();
+    let stream = MediaStreamBuilder::new(event_sender).build();
+
+    // Create and add a track
+    let track_id = "test-track".to_string();
+    let mut track = TestTrack::new(track_id.clone());
+
+    // Add processors to the track
+    track
+        .processor_chain
+        .append_processor(Box::new(TestProcessor {
+            name: "processor1".to_string(),
+        }));
+    track
+        .processor_chain
+        .append_processor(Box::new(TestProcessor {
+            name: "processor2".to_string(),
+        }));
+
+    stream.update_track(Box::new(track), None).await;
+
+    // Remove TestProcessor type
+    let result = stream.remove_processor::<TestProcessor>(&track_id).await;
+    assert!(result.is_ok());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_append_processor() -> Result<()> {
+    use crate::media::processor::Processor;
+
+    // Define a test processor
+    struct AppendTestProcessor {
+        value: u32,
+    }
+
+    impl Processor for AppendTestProcessor {
+        fn process_frame(&mut self, _frame: &mut AudioFrame) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let event_sender = crate::event::create_event_sender();
+    let stream = MediaStreamBuilder::new(event_sender).build();
+
+    // Create and add a track
+    let track_id = "test-track".to_string();
+    let track = TestTrack::new(track_id.clone());
+
+    stream.update_track(Box::new(track), None).await;
+
+    // Append a processor
+    let processor = Box::new(AppendTestProcessor { value: 42 });
+    let result = stream.append_processor(&track_id, processor).await;
+    assert!(result.is_ok());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_remove_processor_from_nonexistent_track() -> Result<()> {
+    use crate::media::processor::Processor;
+
+    struct NonexistentProcessor;
+
+    impl Processor for NonexistentProcessor {
+        fn process_frame(&mut self, _frame: &mut AudioFrame) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let event_sender = crate::event::create_event_sender();
+    let stream = MediaStreamBuilder::new(event_sender).build();
+
+    // Try to remove a processor from a track that doesn't exist
+    let result = stream
+        .remove_processor::<NonexistentProcessor>(&"nonexistent-track".to_string())
+        .await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not found"));
+
+    Ok(())
+}

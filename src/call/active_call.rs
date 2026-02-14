@@ -20,6 +20,7 @@ use crate::{
         },
     },
     synthesis::{SynthesisCommand, SynthesisOption},
+    transcription::TranscriptionOption,
 };
 use crate::{
     app::AppState,
@@ -254,6 +255,7 @@ pub struct ActiveCallState {
     pub current_play_id: Option<String>,
     pub audio_receiver: Option<WebsocketBytesReceiver>,
     pub ready_to_answer: Option<(String, Option<Box<dyn Track>>, ServerInviteDialog)>,
+    pub pending_asr_resume: Option<(u32, TranscriptionOption)>,
 }
 
 pub type ActiveCallRef = Arc<ActiveCall>;
@@ -539,6 +541,63 @@ impl ActiveCall {
                         self.do_hangup(Some(CallRecordHangupReason::InactivityTimeout), None, None)
                             .await
                             .ok();
+                    }
+                    SessionEvent::Hangup { refer, .. } => {
+                        // Check if we need to resume ASR after refer hangup
+                        if refer == Some(true) {
+                            let mut cs = self.call_state.write().await;
+                            if let Some((refer_ssrc, asr_option)) = cs.pending_asr_resume.take() {
+                                // Verify it's the refer call that ended
+                                let is_refer_hangup = cs
+                                    .refer_callstate
+                                    .as_ref()
+                                    .map(|rcs| rcs.blocking_read().ssrc == refer_ssrc)
+                                    .unwrap_or(false);
+
+                                if is_refer_hangup {
+                                    drop(cs); // Release lock before async operations
+                                    info!(
+                                        session_id = self.session_id,
+                                        "Refer call ended, resuming parent ASR"
+                                    );
+
+                                    // Resume ASR
+                                    match self
+                                        .app_state
+                                        .stream_engine
+                                        .create_asr_processor(
+                                            self.server_side_track_id.clone(),
+                                            self.cancel_token.child_token(),
+                                            asr_option,
+                                            self.event_sender.clone(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(asr_processor) => {
+                                            if let Err(e) = self
+                                                .media_stream
+                                                .append_processor(
+                                                    &self.server_side_track_id,
+                                                    asr_processor,
+                                                )
+                                                .await
+                                            {
+                                                warn!(
+                                                    session_id = self.session_id,
+                                                    "Failed to resume ASR after refer: {}", e
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                session_id = self.session_id,
+                                                "Failed to create ASR processor for resume: {}", e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     SessionEvent::Error { track_id, .. } => {
                         if track_id != server_side_track_id {
@@ -1172,6 +1231,35 @@ impl ActiveCall {
         refer_option: Option<ReferOption>,
     ) -> Result<()> {
         self.do_interrupt(false).await.ok();
+
+        // Check if we should pause parent ASR
+        let pause_parent_asr = refer_option
+            .as_ref()
+            .and_then(|o| o.pause_parent_asr)
+            .unwrap_or(false);
+
+        // Save original ASR option for later resume
+        let original_asr_option = if pause_parent_asr {
+            let cs = self.call_state.read().await;
+            cs.option.as_ref().and_then(|o| o.asr.clone())
+        } else {
+            None
+        };
+
+        // Pause parent ASR if requested
+        if pause_parent_asr {
+            info!(
+                session_id = self.session_id,
+                "Pausing parent call ASR during refer"
+            );
+            self.media_stream
+                .remove_processor::<crate::media::asr_processor::AsrProcessor>(
+                    &self.server_side_track_id,
+                )
+                .await
+                .ok();
+        }
+
         let mut moh = refer_option.as_ref().and_then(|o| o.moh.clone());
         if let Some(ref path) = moh {
             if !path.starts_with("http") && !std::path::Path::new(path).exists() {
@@ -1263,6 +1351,12 @@ impl ActiveCall {
                 Some((ssrc, CallRecordHangupReason::ByRefer));
         } else {
             self.call_state.write().await.auto_hangup = None;
+        }
+
+        // Setup ASR resume after refer ends (if not auto_hangup and ASR was paused)
+        if !auto_hangup_requested && pause_parent_asr && original_asr_option.is_some() {
+            let asr_option = original_asr_option.unwrap();
+            self.call_state.write().await.pending_asr_resume = Some((ssrc, asr_option));
         }
 
         let timeout_secs = refer_option.as_ref().and_then(|o| o.timeout).unwrap_or(30);

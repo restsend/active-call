@@ -277,6 +277,28 @@ impl MediaStream {
     pub async fn resume_forwarding(&self, track_id: &TrackId) {
         self.suppressed_sources.lock().await.remove(track_id);
     }
+
+    pub async fn remove_processor<T: 'static>(&self, track_id: &TrackId) -> Result<()> {
+        if let Some((track, _)) = self.tracks.lock().await.get_mut(track_id) {
+            track.as_mut().processor_chain().remove_processor::<T>();
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Track {} not found", track_id))
+        }
+    }
+
+    pub async fn append_processor(
+        &self,
+        track_id: &TrackId,
+        processor: Box<dyn crate::media::processor::Processor>,
+    ) -> Result<()> {
+        if let Some((track, _)) = self.tracks.lock().await.get_mut(track_id) {
+            track.as_mut().processor_chain().append_processor(processor);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Track {} not found", track_id))
+        }
+    }
 }
 
 #[derive(Clone)]

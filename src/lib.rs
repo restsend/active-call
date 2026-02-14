@@ -173,6 +173,8 @@ pub struct ReferOption {
     pub auto_hangup: Option<bool>,
     pub sip: Option<SipOption>,
     pub call_id: Option<String>,
+    /// Pause parent call's ASR during refer call, will resume after refer ends (if auto_hangup is false)
+    pub pause_parent_asr: Option<bool>,
 }
 
 #[skip_serializing_none]
