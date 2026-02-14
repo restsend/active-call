@@ -55,6 +55,7 @@ pub struct PlaybookConfig {
     pub greeting: Option<String>,
     pub interruption: Option<InterruptionConfig>,
     pub dtmf: Option<HashMap<String, DtmfAction>>,
+    pub dtmf_collectors: Option<HashMap<String, DtmfCollectorConfig>>,
     pub realtime: Option<RealtimeOption>,
     pub posthook: Option<PostHookConfig>,
     pub follow_up: Option<FollowUpConfig>,
@@ -111,6 +112,42 @@ pub enum DtmfAction {
     Goto { scene: String },
     Transfer { target: String },
     Hangup,
+}
+
+/// Validation rule for DTMF digit collection
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DtmfValidation {
+    /// Regex pattern for validation, e.g. "^1[3-9]\\d{9}$" for Chinese phone numbers
+    pub pattern: String,
+    /// Error message shown when validation fails
+    pub error_message: Option<String>,
+}
+
+/// Configuration for a DTMF digit collector template
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DtmfCollectorConfig {
+    /// Human-readable description of this collector (used in LLM prompt generation)
+    pub description: Option<String>,
+    /// Exact expected digit count (shorthand for min_digits == max_digits)
+    pub digits: Option<u32>,
+    /// Minimum digits required
+    pub min_digits: Option<u32>,
+    /// Maximum digits allowed
+    pub max_digits: Option<u32>,
+    /// Key that terminates collection: "#" or "*"
+    pub finish_key: Option<String>,
+    /// Overall timeout in seconds (default: 15)
+    pub timeout: Option<u32>,
+    /// Max seconds between consecutive key presses (default: 5)
+    pub inter_digit_timeout: Option<u32>,
+    /// Validation rule (regex + error message)
+    pub validation: Option<DtmfValidation>,
+    /// Max retry attempts when validation fails (default: 3)
+    pub retry_times: Option<u32>,
+    /// Whether voice input (ASR) can interrupt collection (default: false)
+    pub interruptible: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]

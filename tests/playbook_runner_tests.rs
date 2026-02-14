@@ -108,6 +108,7 @@ async fn test_playbook_run_flow() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     // 4. Create Runner
@@ -234,6 +235,7 @@ async fn test_playbook_hangup_flow() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
     let runner = PlaybookRunner::with_handler(
         Box::new(llm_handler),
@@ -326,6 +328,7 @@ async fn test_playbook_accept_flow() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
     let runner = PlaybookRunner::with_handler(
         Box::new(llm_handler),
@@ -389,6 +392,7 @@ async fn test_playbook_reject_flow() -> Result<()> {
         active_call::playbook::InterruptionConfig::default(),
         None,
         HashMap::new(),
+        None,
         None,
         None,
         None,

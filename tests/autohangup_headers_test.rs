@@ -92,6 +92,7 @@ async fn test_autohangup_headers_stored_in_extras() -> Result<()> {
         HashMap::new(),
         None,
         None,
+        None,
         Some(sip_option),
     );
 
@@ -181,6 +182,7 @@ async fn test_autohangup_without_sip_config() -> Result<()> {
         InterruptionConfig::default(),
         None,
         HashMap::new(),
+        None,
         None,
         None,
         None, // No SipOption
@@ -283,6 +285,7 @@ async fn test_autohangup_headers_with_template_variables() -> Result<()> {
         InterruptionConfig::default(),
         None,
         HashMap::new(),
+        None,
         None,
         None,
         Some(sip_option),

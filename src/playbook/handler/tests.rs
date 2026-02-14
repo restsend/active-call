@@ -74,7 +74,7 @@ fn test_build_system_prompt_with_features() {
         ..Default::default()
     };
 
-    let prompt = LlmHandler::build_system_prompt(&config, None);
+    let prompt = LlmHandler::build_system_prompt(&config, None, None);
     assert!(prompt.contains("Base prompt"));
     assert!(prompt.contains("### Enhanced Capabilities:"));
     // This is the content of intent_clarification.zh.md
@@ -92,7 +92,7 @@ fn test_build_system_prompt_missing_feature() {
     };
 
     // Should not crash, just warn and omit the feature
-    let prompt = LlmHandler::build_system_prompt(&config, None);
+    let prompt = LlmHandler::build_system_prompt(&config, None, None);
     assert!(prompt.contains("Base prompt"));
     assert!(!prompt.contains("Enhanced Capabilities"));
 }
@@ -106,7 +106,7 @@ fn test_build_system_prompt_en() {
         ..Default::default()
     };
 
-    let prompt = LlmHandler::build_system_prompt(&config, None);
+    let prompt = LlmHandler::build_system_prompt(&config, None, None);
     assert!(prompt.contains("If the user's intent is unclear"));
 }
 
@@ -129,6 +129,7 @@ async fn handler_applies_tool_instructions() -> Result<()> {
         crate::playbook::InterruptionConfig::default(),
         None,
         HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -186,6 +187,7 @@ async fn handler_requeries_after_rag() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     let event = SessionEvent::AsrFinal {
@@ -235,6 +237,7 @@ async fn test_full_dialogue_flow() -> Result<()> {
         crate::playbook::InterruptionConfig::default(),
         None,
         HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -342,6 +345,7 @@ async fn test_xml_tools_and_sentence_splitting() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     let event = SessionEvent::AsrFinal {
@@ -422,6 +426,7 @@ async fn test_interruption_logic() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     // 1. Trigger a response
@@ -484,6 +489,7 @@ async fn test_rag_iteration_limit() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     let event = SessionEvent::AsrFinal {
@@ -532,6 +538,7 @@ async fn test_follow_up_logic() -> Result<()> {
         crate::playbook::InterruptionConfig::default(),
         Some(follow_up_config),
         HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -663,6 +670,7 @@ async fn test_interruption_protection_period() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     // 1. Trigger a response
@@ -714,6 +722,7 @@ async fn test_interruption_filler_word() -> Result<()> {
         config,
         None,
         HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -789,6 +798,7 @@ async fn test_eou_early_response() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     // 1. Receive EOU
@@ -819,6 +829,7 @@ async fn test_summary_and_history() -> Result<()> {
         crate::playbook::InterruptionConfig::default(),
         None,
         HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -862,6 +873,7 @@ async fn test_rolling_summary() -> Result<()> {
         crate::playbook::InterruptionConfig::default(),
         None,
         HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -938,6 +950,7 @@ async fn test_set_var_extraction() {
         None,
         None,
         None,
+        None,
     );
 
     let mut buffer = "Hello <set_var key=\"foo\" value=\"bar\" /> world".to_string();
@@ -974,6 +987,7 @@ async fn test_multiple_set_vars() {
         interruption,
         None,
         std::collections::HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -1047,6 +1061,7 @@ async fn test_set_var_updates_state() {
         None, // global_follow_up
         std::collections::HashMap::new(),
         None, // dtmf
+        None, // dtmf_collectors
         None, // initial_scene_id
         None, // sip_config
     );
@@ -1135,6 +1150,7 @@ async fn test_set_var_with_sip_headers() {
         None,
         None,
         None,
+        None,
     );
     handler.call = Some(active_call.clone());
 
@@ -1217,6 +1233,7 @@ async fn test_http_command_in_stream() {
         interruption,
         None,
         std::collections::HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -1308,6 +1325,7 @@ async fn test_http_command_post_with_body() {
         None,
         None,
         None,
+        None,
     );
     handler.call = Some(active_call.clone());
 
@@ -1386,6 +1404,7 @@ async fn test_multiple_commands_in_sequence() {
         None,
         None,
         None,
+        None,
     );
     handler.call = Some(active_call.clone());
 
@@ -1455,6 +1474,7 @@ async fn test_set_var_individual_sip_header() {
         interruption,
         None,
         std::collections::HashMap::new(),
+        None,
         None,
         None,
         None,
@@ -1554,6 +1574,7 @@ async fn test_bye_headers_with_all_variables() {
         std::collections::HashMap::new(),
         None,
         None,
+        None,
         Some(sip_config),
     );
     handler.call = Some(active_call.clone());
@@ -1636,6 +1657,7 @@ async fn test_bye_headers_with_unset_variables() {
         interruption,
         None,
         StdHashMap::new(),
+        None,
         None,
         None,
         Some(sip_config),
@@ -1727,6 +1749,7 @@ async fn test_set_var_then_bye_headers() {
         interruption,
         None,
         StdHashMap::new(),
+        None,
         None,
         None,
         Some(sip_config),
@@ -1890,6 +1913,7 @@ async fn test_hangup_before_set_var_still_works() {
         interruption,
         None,
         StdHashMap::new(),
+        None,
         None,
         None,
         Some(sip_config),

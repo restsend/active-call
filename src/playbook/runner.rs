@@ -48,6 +48,7 @@ impl PlaybookRunner {
             }
             let interruption_config = playbook.config.interruption.clone().unwrap_or_default();
             let dtmf_config = playbook.config.dtmf.clone();
+            let dtmf_collectors = playbook.config.dtmf_collectors.clone();
 
             let mut llm_handler = LlmHandler::new(
                 llm_config,
@@ -55,6 +56,7 @@ impl PlaybookRunner {
                 playbook.config.follow_up,
                 playbook.scenes.clone(),
                 dtmf_config,
+                dtmf_collectors,
                 playbook.initial_scene_id.clone(),
                 playbook.config.sip.clone(),
             );

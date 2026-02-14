@@ -14,6 +14,9 @@ use tracing::{info, warn};
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod dtmf_collector_tests;
+
 static RE_HANGUP: Lazy<Regex> = Lazy::new(|| Regex::new(r"<hangup\s*/>").unwrap());
 static RE_REFER: Lazy<Regex> = Lazy::new(|| Regex::new(r#"<refer\s+to="([^"]+)"\s*/>"#).unwrap());
 static RE_PLAY: Lazy<Regex> = Lazy::new(|| Regex::new(r#"<play\s+file="([^"]+)"\s*/>"#).unwrap());
@@ -23,6 +26,9 @@ static RE_SET_VAR: Lazy<Regex> =
 static RE_HTTP: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"<http\s+url="([^"]+)"(?:\s+method="([^"]+)")?(?:\s+body="([^"]+)")?\s*/>"#)
         .unwrap()
+});
+static RE_COLLECT: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"<collect\s+type="([^"]+)"\s+var="([^"]+)"(?:\s+prompt="([^"]*)")?\s*/>"#).unwrap()
 });
 static RE_SENTENCE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)[.!?。！？\n]\s*").unwrap());
 static FILLERS: Lazy<std::collections::HashSet<String>> = Lazy::new(|| {
@@ -64,6 +70,7 @@ enum CommandKind {
     Goto,
     SetVar,
     Http,
+    Collect,
 }
 
 pub use provider::*;
@@ -72,11 +79,31 @@ pub use types::*;
 
 const MAX_RAG_ATTEMPTS: usize = 3;
 
+/// Runtime state for an active DTMF digit collection session
+#[derive(Debug, Clone)]
+pub struct CollectorState {
+    /// Name of the collector type being used (key into dtmf_collectors)
+    pub collector_type: String,
+    /// Variable name to store the collected digits
+    pub var_name: String,
+    /// Resolved config from the collector template
+    pub config: super::DtmfCollectorConfig,
+    /// Buffer of collected digits so far
+    pub buffer: String,
+    /// When collection started
+    pub start_time: std::time::Instant,
+    /// When the last digit was received
+    pub last_digit_time: std::time::Instant,
+    /// Number of retries attempted
+    pub retry_count: u32,
+}
+
 pub struct LlmHandler {
     config: LlmConfig,
     interruption_config: super::InterruptionConfig,
     global_follow_up_config: Option<super::FollowUpConfig>,
     dtmf_config: Option<HashMap<String, super::DtmfAction>>,
+    dtmf_collectors: Option<HashMap<String, super::DtmfCollectorConfig>>,
     history: Vec<ChatMessage>,
     provider: Arc<dyn LlmProvider>,
     rag_retriever: Arc<dyn RagRetriever>,
@@ -93,6 +120,8 @@ pub struct LlmHandler {
     current_scene_id: Option<String>,
     client: Client,
     sip_config: Option<crate::SipOption>,
+    /// Active DTMF digit collector state (None when not collecting)
+    collector_state: Option<CollectorState>,
 }
 
 impl LlmHandler {
@@ -102,6 +131,7 @@ impl LlmHandler {
         global_follow_up_config: Option<super::FollowUpConfig>,
         scenes: HashMap<String, super::Scene>,
         dtmf: Option<HashMap<String, super::DtmfAction>>,
+        dtmf_collectors: Option<HashMap<String, super::DtmfCollectorConfig>>,
         initial_scene_id: Option<String>,
         sip_config: Option<crate::SipOption>,
     ) -> Self {
@@ -113,6 +143,7 @@ impl LlmHandler {
             global_follow_up_config,
             scenes,
             dtmf,
+            dtmf_collectors,
             initial_scene_id,
             sip_config,
         )
@@ -126,11 +157,12 @@ impl LlmHandler {
         global_follow_up_config: Option<super::FollowUpConfig>,
         scenes: HashMap<String, super::Scene>,
         dtmf: Option<HashMap<String, super::DtmfAction>>,
+        dtmf_collectors: Option<HashMap<String, super::DtmfCollectorConfig>>,
         initial_scene_id: Option<String>,
         sip_config: Option<crate::SipOption>,
     ) -> Self {
         let mut history = Vec::new();
-        let system_prompt = Self::build_system_prompt(&config, None);
+        let system_prompt = Self::build_system_prompt(&config, None, dtmf_collectors.as_ref());
 
         history.push(ChatMessage {
             role: "system".to_string(),
@@ -142,6 +174,7 @@ impl LlmHandler {
             interruption_config: interruption,
             global_follow_up_config,
             dtmf_config: dtmf,
+            dtmf_collectors,
             history,
             provider,
             rag_retriever,
@@ -158,10 +191,15 @@ impl LlmHandler {
             current_scene_id: initial_scene_id,
             client: Client::new(),
             sip_config,
+            collector_state: None,
         }
     }
 
-    fn build_system_prompt(config: &LlmConfig, scene_prompt: Option<&str>) -> String {
+    fn build_system_prompt(
+        config: &LlmConfig,
+        scene_prompt: Option<&str>,
+        dtmf_collectors: Option<&HashMap<String, super::DtmfCollectorConfig>>,
+    ) -> String {
         let base_prompt =
             scene_prompt.unwrap_or_else(|| config.prompt.as_deref().unwrap_or_default());
         let mut features_prompt = String::new();
@@ -213,9 +251,11 @@ impl LlmHandler {
                 })
         };
 
+        let collector_section = Self::generate_collector_instructions(dtmf_collectors);
+
         format!(
-            "{}{}\n\n{}",
-            base_prompt, features_section, tool_instructions
+            "{}{}\n\n{}\n{}",
+            base_prompt, features_section, tool_instructions, collector_section
         )
     }
 
@@ -223,6 +263,345 @@ impl LlmHandler {
         let path = format!("features/{}.{}.md", feature, lang);
         let content = std::fs::read_to_string(path)?;
         Ok(content.trim().to_string())
+    }
+
+    /// Generate LLM prompt instructions for available DTMF digit collectors
+    fn generate_collector_instructions(
+        collectors: Option<&HashMap<String, super::DtmfCollectorConfig>>,
+    ) -> String {
+        let collectors = match collectors {
+            Some(c) if !c.is_empty() => c,
+            _ => return String::new(),
+        };
+
+        let mut doc = String::from("\n### DTMF Digit Collection\n\n");
+        doc.push_str(
+            "When you need to collect numeric input from the user (such as phone numbers, \
+             verification codes, ID numbers, etc.), use the DTMF digit collection command. \
+             This is more accurate than voice recognition for numeric input.\n\n",
+        );
+        doc.push_str("**Usage:** Output the following XML tag to start collecting:\n");
+        doc.push_str(
+            "```\n<collect type=\"TYPE\" var=\"VAR_NAME\" prompt=\"PROMPT_TEXT\" />\n```\n\n",
+        );
+        doc.push_str("- `type`: The collector type (see available types below)\n");
+        doc.push_str("- `var`: Variable name to store the collected digits\n");
+        doc.push_str("- `prompt`: The voice prompt to play before collecting (tell the user what to input)\n\n");
+        doc.push_str("**Available collector types:**\n\n");
+
+        // Sort by key for deterministic output
+        let mut sorted: Vec<_> = collectors.iter().collect();
+        sorted.sort_by_key(|(k, _)| (*k).clone());
+
+        for (name, config) in &sorted {
+            let desc = config.description.as_deref().unwrap_or("No description");
+            let mut details = Vec::new();
+            if let Some(d) = config.digits {
+                details.push(format!("{} digits", d));
+            } else {
+                if let Some(min) = config.min_digits {
+                    details.push(format!("min {} digits", min));
+                }
+                if let Some(max) = config.max_digits {
+                    details.push(format!("max {} digits", max));
+                }
+            }
+            if let Some(fk) = &config.finish_key {
+                details.push(format!("press {} to finish", fk));
+            }
+            let detail_str = if details.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", details.join(", "))
+            };
+            doc.push_str(&format!("- `{}`: {}{}\n", name, desc, detail_str));
+        }
+
+        doc.push_str("\n**Flow:**\n");
+        doc.push_str("1. You output `<collect .../>` with a voice prompt\n");
+        doc.push_str("2. The system plays your prompt, then enters digit collection mode (voice input is ignored)\n");
+        doc.push_str("3. When collection completes, the system notifies you with the result\n");
+        doc.push_str("4. You can access the collected value via `{{ var_name }}` in subsequent responses\n\n");
+        doc.push_str(
+            "**Important:** During collection the user can only input digits, not speak. ",
+        );
+        doc.push_str("If validation fails, the system will automatically retry. ");
+        doc.push_str("After collection success or failure, continue the conversation naturally.\n");
+
+        doc
+    }
+
+    /// Check if the collector has timed out and handle accordingly.
+    /// Returns commands to execute (e.g., retry prompt or failure notification).
+    pub async fn check_collector_timeout(&mut self) -> Result<Vec<Command>> {
+        let state = match &self.collector_state {
+            Some(s) => s,
+            None => return Ok(vec![]),
+        };
+
+        let timeout_secs = state.config.timeout.unwrap_or(15) as u64;
+        let inter_digit_timeout_secs = state.config.inter_digit_timeout.unwrap_or(5) as u64;
+
+        // Check overall timeout
+        if state.start_time.elapsed().as_secs() >= timeout_secs {
+            info!(
+                "DTMF collector overall timeout ({}s) for var={}",
+                timeout_secs, state.var_name
+            );
+            let var_name = state.var_name.clone();
+            let buffer = state.buffer.clone();
+            let collector_type = state.collector_type.clone();
+            let config = state.config.clone();
+            let retry_count = state.retry_count;
+            self.collector_state = None;
+
+            if !buffer.is_empty() {
+                // Try to validate what we have
+                return self
+                    .do_finish_collection(buffer, var_name, collector_type, config, retry_count)
+                    .await;
+            }
+
+            // Nothing collected - notify LLM
+            self.history.push(ChatMessage {
+                role: "system".to_string(),
+                content: format!(
+                    "[DTMF collection timed out for '{}'. No digits were entered. Please guide the user.]",
+                    var_name
+                ),
+            });
+            return self.generate_response().await;
+        }
+
+        // Check inter-digit timeout (only if we have some digits)
+        if !state.buffer.is_empty()
+            && state.last_digit_time.elapsed().as_secs() >= inter_digit_timeout_secs
+        {
+            info!(
+                "DTMF collector inter-digit timeout ({}s) for var={}, buffer={}",
+                inter_digit_timeout_secs, state.var_name, state.buffer
+            );
+            let buffer = state.buffer.clone();
+            let var_name = state.var_name.clone();
+            let collector_type = state.collector_type.clone();
+            let config = state.config.clone();
+            let retry_count = state.retry_count;
+            self.collector_state = None;
+            return self
+                .do_finish_collection(buffer, var_name, collector_type, config, retry_count)
+                .await;
+        }
+
+        Ok(vec![])
+    }
+
+    /// Handle a DTMF digit while in collector mode
+    async fn handle_collector_digit(&mut self, digit: &str) -> Result<Vec<Command>> {
+        let state = self.collector_state.as_mut().unwrap();
+
+        // Check if it's the finish key
+        if let Some(ref finish_key) = state.config.finish_key.clone() {
+            if digit == finish_key {
+                info!("DTMF collector: finish key '{}' received", digit);
+                let buffer = state.buffer.clone();
+                let var_name = state.var_name.clone();
+                let collector_type = state.collector_type.clone();
+                let config = state.config.clone();
+                let retry_count = state.retry_count;
+                self.collector_state = None;
+                return self
+                    .do_finish_collection(buffer, var_name, collector_type, config, retry_count)
+                    .await;
+            }
+        }
+
+        // Append digit to buffer
+        state.buffer.push_str(digit);
+        state.last_digit_time = std::time::Instant::now();
+
+        info!(
+            "DTMF collector: digit '{}', buffer now '{}'",
+            digit, state.buffer
+        );
+
+        // Check if we've reached the required digit count
+        let effective_max = state.config.digits.or(state.config.max_digits);
+
+        if let Some(max) = effective_max {
+            if state.buffer.len() >= max as usize {
+                // If no finish_key is configured, auto-complete at max digits
+                if state.config.finish_key.is_none() {
+                    info!("DTMF collector: reached max digits ({})", max);
+                    let buffer = state.buffer.clone();
+                    let var_name = state.var_name.clone();
+                    let collector_type = state.collector_type.clone();
+                    let config = state.config.clone();
+                    let retry_count = state.retry_count;
+                    self.collector_state = None;
+                    return self
+                        .do_finish_collection(buffer, var_name, collector_type, config, retry_count)
+                        .await;
+                }
+            }
+        }
+
+        Ok(vec![])
+    }
+
+    /// Internal: finish collection with full state available
+    async fn do_finish_collection(
+        &mut self,
+        buffer: String,
+        var_name: String,
+        collector_type: String,
+        config: super::DtmfCollectorConfig,
+        retry_count: u32,
+    ) -> Result<Vec<Command>> {
+        // Validate min digits
+        let min = config.digits.or(config.min_digits).unwrap_or(0);
+        if min > 0 && (buffer.len() as u32) < min {
+            return self
+                .retry_or_fail(
+                    collector_type,
+                    config,
+                    retry_count,
+                    var_name,
+                    &format!("Expected at least {} digits, got {}", min, buffer.len()),
+                )
+                .await;
+        }
+
+        // Validate pattern
+        if let Some(validation) = &config.validation {
+            if let Ok(re) = regex::Regex::new(&validation.pattern) {
+                if !re.is_match(&buffer) {
+                    let msg = validation
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| "Input format is incorrect".to_string());
+                    return self
+                        .retry_or_fail(collector_type, config, retry_count, var_name, &msg)
+                        .await;
+                }
+            }
+        }
+
+        // Validation passed - store the variable
+        info!(
+            "DTMF collector: successfully collected '{}' for var '{}'",
+            buffer, var_name
+        );
+
+        if let Some(call) = &self.call {
+            let mut state = call.call_state.write().await;
+            let mut extras = state.extras.take().unwrap_or_default();
+            extras.insert(var_name.clone(), serde_json::Value::String(buffer.clone()));
+            state.extras = Some(extras);
+        }
+
+        // Notify LLM of the result
+        self.history.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!("[DTMF collection completed for '{}': {}]", var_name, buffer),
+        });
+
+        // Let LLM continue
+        self.generate_response().await
+    }
+
+    /// Retry collection or fail after max retries
+    async fn retry_or_fail(
+        &mut self,
+        collector_type: String,
+        config: super::DtmfCollectorConfig,
+        retry_count: u32,
+        var_name: String,
+        reason: &str,
+    ) -> Result<Vec<Command>> {
+        let max_retries = config.retry_times.unwrap_or(3);
+
+        if retry_count >= max_retries {
+            info!(
+                "DTMF collector: max retries ({}) reached for var '{}'",
+                max_retries, var_name
+            );
+            self.history.push(ChatMessage {
+                role: "system".to_string(),
+                content: format!(
+                    "[DTMF collection failed for '{}' after {} retries: {}. Please guide the user to try again or use an alternative method.]",
+                    var_name, max_retries, reason
+                ),
+            });
+            return self.generate_response().await;
+        }
+
+        info!(
+            "DTMF collector: retry {}/{} for var '{}': {}",
+            retry_count + 1,
+            max_retries,
+            var_name,
+            reason
+        );
+
+        // Restart collection with incremented retry count
+        let now = std::time::Instant::now();
+        self.collector_state = Some(CollectorState {
+            collector_type,
+            var_name,
+            config: config.clone(),
+            buffer: String::new(),
+            start_time: now,
+            last_digit_time: now,
+            retry_count: retry_count + 1,
+        });
+
+        // Play error message
+        let error_msg = config
+            .validation
+            .as_ref()
+            .and_then(|v| v.error_message.clone())
+            .unwrap_or_else(|| reason.to_string());
+
+        Ok(vec![self.create_tts_command(error_msg, None, None)])
+    }
+
+    /// Start a DTMF collector from an LLM-generated <collect> command
+    fn start_collector(&mut self, collector_type: &str, var_name: &str) -> bool {
+        let config = match &self.dtmf_collectors {
+            Some(collectors) => match collectors.get(collector_type) {
+                Some(c) => c.clone(),
+                None => {
+                    warn!("Unknown DTMF collector type: {}", collector_type);
+                    return false;
+                }
+            },
+            None => {
+                warn!("No DTMF collectors configured");
+                return false;
+            }
+        };
+
+        let now = std::time::Instant::now();
+        self.collector_state = Some(CollectorState {
+            collector_type: collector_type.to_string(),
+            var_name: var_name.to_string(),
+            config,
+            buffer: String::new(),
+            start_time: now,
+            last_digit_time: now,
+            retry_count: 0,
+        });
+
+        info!(
+            "DTMF collector started: type={}, var={}",
+            collector_type, var_name
+        );
+        true
+    }
+
+    /// Returns true if currently in DTMF digit collection mode
+    pub fn is_collecting(&self) -> bool {
+        self.collector_state.is_some()
     }
 
     fn get_dtmf_action(&self, digit: &str) -> Option<super::DtmfAction> {
@@ -279,7 +658,11 @@ impl LlmHandler {
         if let Some(scene) = self.scenes.get(scene_id).cloned() {
             info!("Switching to scene: {}", scene_id);
             self.current_scene_id = Some(scene_id.to_string());
-            let system_prompt = Self::build_system_prompt(&self.config, Some(&scene.prompt));
+            let system_prompt = Self::build_system_prompt(
+                &self.config,
+                Some(&scene.prompt),
+                self.dtmf_collectors.as_ref(),
+            );
             if let Some(first_msg) = self.history.get_mut(0) {
                 if first_msg.role == "system" {
                     first_msg.content = system_prompt;
@@ -523,6 +906,7 @@ impl LlmHandler {
             let goto_pos = RE_GOTO.captures(buffer);
             let set_var_pos = RE_SET_VAR.captures(buffer);
             let http_pos = RE_HTTP.captures(buffer);
+            let collect_pos = RE_COLLECT.captures(buffer);
             let sentence_pos = RE_SENTENCE.find(buffer);
 
             // Find the first occurrence
@@ -544,6 +928,9 @@ impl LlmHandler {
             }
             if let Some(caps) = &http_pos {
                 positions.push((caps.get(0).unwrap().start(), CommandKind::Http));
+            }
+            if let Some(caps) = &collect_pos {
+                positions.push((caps.get(0).unwrap().start(), CommandKind::Collect));
             }
             if let Some(m) = sentence_pos {
                 positions.push((m.start(), CommandKind::Sentence));
@@ -714,8 +1101,11 @@ impl LlmHandler {
                         if let Some(scene) = self.scenes.get(&scene_id) {
                             self.current_scene_id = Some(scene_id);
                             // Update system prompt in history
-                            let system_prompt =
-                                Self::build_system_prompt(&self.config, Some(&scene.prompt));
+                            let system_prompt = Self::build_system_prompt(
+                                &self.config,
+                                Some(&scene.prompt),
+                                self.dtmf_collectors.as_ref(),
+                            );
                             if let Some(first_msg) = self.history.get_mut(0) {
                                 if first_msg.role == "system" {
                                     first_msg.content = system_prompt;
@@ -723,6 +1113,48 @@ impl LlmHandler {
                             }
                         } else {
                             warn!("Scene not found: {}", scene_id);
+                        }
+
+                        buffer.drain(..mat.end());
+                    }
+                    CommandKind::Collect => {
+                        let caps = RE_COLLECT.captures(buffer).unwrap();
+                        let mat = caps.get(0).unwrap();
+                        let collector_type = caps.get(1).unwrap().as_str().to_string();
+                        let var_name = caps.get(2).unwrap().as_str().to_string();
+                        let prompt = caps.get(3).map(|m| m.as_str().to_string());
+
+                        // Flush any text before the <collect> tag as TTS
+                        let prefix = buffer[..pos].to_string();
+                        if !prefix.trim().is_empty() {
+                            commands.push(self.create_tts_command_with_id(
+                                prefix,
+                                play_id.to_string(),
+                                None,
+                            ));
+                        }
+
+                        // Play the collector prompt if provided
+                        if let Some(p) = prompt {
+                            if !p.trim().is_empty() {
+                                commands.push(self.create_tts_command(p, None, None));
+                            }
+                        }
+
+                        // Start the collector
+                        if !self.start_collector(&collector_type, &var_name) {
+                            // Collector type not found, notify LLM
+                            self.history.push(ChatMessage {
+                                role: "system".to_string(),
+                                content: format!(
+                                    "[Unknown DTMF collector type '{}'. Available types: {}]",
+                                    collector_type,
+                                    self.dtmf_collectors
+                                        .as_ref()
+                                        .map(|c| c.keys().cloned().collect::<Vec<_>>().join(", "))
+                                        .unwrap_or_default()
+                                ),
+                            });
                         }
 
                         buffer.drain(..mat.end());
@@ -1469,6 +1901,48 @@ impl DialogueHandler for LlmHandler {
     }
 
     async fn on_event(&mut self, event: &SessionEvent) -> Result<Vec<Command>> {
+        // When in DTMF collection mode, only handle DTMF events and track lifecycle
+        if self.collector_state.is_some() {
+            match event {
+                SessionEvent::Dtmf { digit, .. } => {
+                    info!("DTMF received (collecting): {}", digit);
+                    return self.handle_collector_digit(digit).await;
+                }
+                SessionEvent::Silence { .. } => {
+                    // Check collector timeout on silence events
+                    return self.check_collector_timeout().await;
+                }
+                SessionEvent::TrackEnd { .. } => {
+                    self.is_speaking = false;
+                    return Ok(vec![]);
+                }
+                SessionEvent::TrackStart { .. } => {
+                    self.is_speaking = true;
+                    return Ok(vec![]);
+                }
+                SessionEvent::Hangup { .. } => {
+                    // Allow hangup to pass through
+                    self.collector_state = None;
+                }
+                // Ignore ASR/Speaking/Eou during collection (not interruptible by default)
+                SessionEvent::AsrFinal { .. }
+                | SessionEvent::AsrDelta { .. }
+                | SessionEvent::Speaking { .. }
+                | SessionEvent::Eou { .. } => {
+                    let interruptible = self
+                        .collector_state
+                        .as_ref()
+                        .and_then(|s| s.config.interruptible)
+                        .unwrap_or(false);
+                    if !interruptible {
+                        return Ok(vec![]);
+                    }
+                    // If interruptible, fall through to normal handling
+                }
+                _ => return Ok(vec![]),
+            }
+        }
+
         match event {
             SessionEvent::Dtmf { digit, .. } => {
                 info!("DTMF received: {}", digit);

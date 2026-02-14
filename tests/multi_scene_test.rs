@@ -138,6 +138,7 @@ async fn test_scene_transition_logic() -> Result<()> {
         None,
         None,
         None,
+        None,
     );
 
     // 1. Initial State

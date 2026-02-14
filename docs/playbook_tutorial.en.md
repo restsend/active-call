@@ -110,9 +110,147 @@ Used for complex operations like HTTP calls. Results are fed back to the AI for 
 
 ---
 
-## 5. Advanced Features
+## 5. DTMF Digit Collection
 
-### 5.1 Realtime Mode
+In customer service scenarios, collecting numeric information like phone numbers, verification codes, and ID numbers through voice recognition can be error-prone. DTMF (Dual-Tone Multi-Frequency) digit collection provides a more reliable input method.
+
+### 5.1 Configure Collector Templates
+
+Define reusable collector configurations in the Front Matter:
+
+```yaml
+dtmfCollectors:
+  phone:
+    description: "11-digit phone number"
+    digits: 11  # Fixed digit count
+    finishKey: "#"  # Finish key (optional)
+    timeout: 20  # Total timeout (seconds)
+    interDigitTimeout: 5  # Inter-digit timeout (seconds)
+    validation:
+      pattern: "^1[3-9]\\d{9}$"  # Regex validation
+      errorMessage: "Please enter a valid 11-digit phone number starting with 1"
+    retryTimes: 3  # Maximum retries on validation failure
+    interruptible: false  # Allow voice interruption during collection
+  
+  code:
+    description: "6-digit verification code"
+    digits: 6
+    timeout: 30
+    interDigitTimeout: 5
+    retryTimes: 2
+    # No finishKey: auto-completes when max digits reached
+  
+  idcard:
+    description: "ID card number"
+    minDigits: 15  # Minimum digits
+    maxDigits: 18  # Maximum digits
+    finishKey: "#"
+    timeout: 30
+    validation:
+      pattern: "^\\d{15}(\\d{2}[0-9X])?$"
+      errorMessage: "Please enter a 15 or 18-digit ID number"
+```
+
+**Configuration Details**:
+- `digits`: Fixed digit count (`digits: 6` is equivalent to `minDigits: 6, maxDigits: 6`)
+- `finishKey`: Completion key (`#` or `*`). If not set and `maxDigits` is configured, auto-completes when reaching max digits
+- `timeout`: Total duration from start to timeout (seconds)
+- `interDigitTimeout`: Timeout between consecutive key presses (seconds), attempts validation on timeout
+- `validation`: Regex validation rule and error message (optional)
+- `retryTimes`: Maximum retry attempts after validation failure (default: 3)
+- `interruptible`: Whether user can interrupt via voice during collection (default: false)
+
+### 5.2 LLM Invokes Collectors
+
+Once collectors are defined, the system automatically injects available collector information into the LLM's System Prompt. The LLM can start collection by outputting an XML tag:
+
+```markdown
+You are an AI customer service agent. When you need to collect the user's phone number, use:
+<collect type="phone" var="user_phone" prompt="Please enter your 11-digit phone number, then press the pound key" />
+```
+
+**Parameters**:
+- `type`: Collector type (corresponds to a key in `dtmfCollectors`)
+- `var`: Variable name, stored in call state `extras` upon successful collection
+- `prompt`: Voice prompt (optional), tells the user how to input
+
+### 5.3 Collection Flow
+
+1.  **LLM outputs collection command**: `<collect type="phone" var="user_phone" prompt="Please enter your phone number" />`
+2.  **System plays prompt**: Text-to-speech (TTS) plays the prompt
+3.  **Enter collection mode**: User can only input via keypad; voice input is ignored (unless `interruptible: true`)
+4.  **Collection completes**:
+    - User presses finish key (e.g., `#`), or
+    - Reaches maximum digits (if no finish key configured), or
+    - Inter-digit timeout occurs
+5.  **Validation**:
+    - Checks minimum digits (`minDigits`)
+    - Matches regex pattern (`validation.pattern`)
+6.  **Result handling**:
+    - **Validation succeeds**: Stores in `{{ var_name }}`, notifies LLM to continue conversation
+    - **Validation fails**: Plays error message (`errorMessage`), retries collection (up to `retryTimes`)
+    - **Max retries exceeded**: Notifies LLM of failure, LLM guides user (e.g., transfer to agent or try alternative method)
+
+### 5.4 Using Collected Variables
+
+After successful collection, the LLM can reference variables using Minijinja template syntax in subsequent conversations:
+
+```markdown
+Thank you for providing your phone number: {{ user_phone }}. We will send a verification code to this number.
+
+<collect type="code" var="sms_code" prompt="Please enter the 6-digit verification code you received" />
+```
+
+**Debugging Tips**:
+- On collection success/failure, the system sends a System message to the LLM (visible in logs)
+- If collector type doesn't exist, system returns a list of available types to the LLM
+- On timeout, if some digits were collected, system attempts validation; if no digits collected, notifies LLM
+
+### 5.5 Complete Example
+
+```yaml
+---
+asr:
+  provider: "openai"
+tts:
+  provider: "supertonic"
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  language: "en"
+
+dtmfCollectors:
+  phone:
+    description: "11-digit phone number"
+    digits: 11
+    finishKey: "#"
+    validation:
+      pattern: "^1[3-9]\\d{9}$"
+      errorMessage: "Please enter a valid 11-digit phone number"
+    retryTimes: 3
+  
+  code:
+    description: "6-digit verification code"
+    digits: 6
+    retryTimes: 2
+---
+
+# Identity Verification Agent
+
+You are a bank customer service agent. You must verify the user's identity first:
+
+1. First collect phone number: <collect type="phone" var="user_phone" prompt="Please enter your 11-digit phone number, then press the pound key" />
+2. Collect verification code: <collect type="code" var="sms_code" prompt="Please enter the 6-digit verification code you received" />
+3. After successful verification, assist the user with their request
+
+For input errors, guide the user kindly to re-enter. If multiple failures occur, offer to transfer to a human agent.
+```
+
+---
+
+## 6. Advanced Features
+
+### 6.1 Realtime Mode
 If using a model that supports the Realtime API (e.g., OpenAI gpt-4o-realtime), you can enable ultra-low latency mode:
 
 ```yaml
@@ -125,10 +263,10 @@ realtime:
     threshold: 0.5
 ```
 
-### 5.2 RAG (Retrieval-Augmented Generation)
+### 6.2 RAG (Retrieval-Augmented Generation)
 When enabled in the LLM config, the AI can call built-in knowledge base retrieval logic.
 
-### 5.3 Customizing Tool Instructions
+### 6.3 Customizing Tool Instructions
 By default, the system includes tool usage instructions in the prompt based on the `language` setting (e.g., English for "en", Chinese for "zh"). These instructions tell the LLM how to use commands like `<hangup/>`, `<refer/>`, etc.
 
 **Method 1: Use Language-Specific Defaults**
@@ -158,7 +296,7 @@ This allows you to:
 - Add domain-specific guidance
 - Customize the format and style of instructions
 
-### 5.4 Post-hook (Reporting)
+### 6.4 Post-hook (Reporting)
 Automatically generate a summary and push it to your business system after the call ends:
 
 ```yaml
@@ -170,7 +308,7 @@ posthook:
 
 ---
 
-## 6. Best Practices
+## 7. Best Practices
 
 1.  **Short Sentences**: Instruct the AI to use short sentences. The system synthesizes audio per sentence; shorter sentences lead to faster responses.
 2.  **Interruption Protection**: If the AI's speech is critical, set `interruption.strategy: "none"` temporarily in the Front Matter.
